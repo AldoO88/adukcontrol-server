@@ -1,0 +1,11 @@
+node_modules/
+.env
+.env.local
+.env.production
+*.log
+npm-debug.log*
+.DS_Store
+config/firebase-service-account.json
+coverage/
+dist/
+eduk-control-firebase-adminsdk-*.json
