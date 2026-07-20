@@ -1,88 +1,113 @@
-const { Schema, model } = require("mongoose"); // Constructores de Mongoose
+// Modelo de Estudiante
+// Representa a un alumno inscrito en la escuela. Almacena datos personales,
+// la tarjeta RFID, los tutores/padres como subdocumentos, y la referencia
+// al grupo actual. Cada estudiante pertenece a UNA escuela (tenant).
+const { Schema, model } = require("mongoose");
 
-const tutorSchema = new Schema( // Subdocumento: tutor/tutela
+// Subdocumento Tutor/Guardián
+// Un estudiante puede tener uno o varios tutores. Cada tutor puede recibir
+// notificaciones push si tiene un token FCM registrado.
+const guardianSchema = new Schema(
   {
-    name: { // Nombre del tutor
-      type: String, // Cadena
-      required: [true, "Tutor name is required."], // Obligatorio
-      trim: true, // Quitar espacios
+    name: {
+      type: String,
+      required: [true, "Guardian name is required."],
+      trim: true,
     },
-    parentesco: { // Relación/parentesco
-      type: String, // Cadena
-      required: [true, "Parentesco is required."], // Obligatorio
-      trim: true, // Quitar espacios
+    relationship: {
+      type: String,
+      required: [true, "Relationship is required."],
+      trim: true,
     },
-    telefono: { // Número de teléfono
-      type: String, // Cadena
-      required: [true, "Tutor telefono is required."], // Obligatorio
-      trim: true, // Quitar espacios
+    phone: {
+      type: String,
+      required: [true, "Guardian phone is required."],
+      trim: true,
     },
-    fcmToken: { // Token FCM del dispositivo
-      type: String, // Cadena
-      default: null, // Nulo hasta que se registre
-      trim: true, // Quitar espacios
+    fcm_token: {
+      type: String,
+      default: null,
+      trim: true,
     },
   },
-  { _id: false } // Sin _id en subdocumento
+  { _id: false }
 );
 
-const studentSchema = new Schema( // Esquema de Estudiante
+const studentSchema = new Schema(
   {
-    matricula: { // Identificador escolar
-      type: String, // Cadena
-      required: [true, "Matricula is required."], // Obligatorio
-      unique: true, // Sin duplicados
-      trim: true, // Quitar espacios
-      uppercase: true, // Normalizar a mayúsculas
+    // Referencia a la escuela (tenant) — obligatoria para aislamiento multi-tenant
+    school: {
+      type: Schema.Types.ObjectId,
+      ref: "School",
+      required: [true, "School reference is required."],
+      index: true,
     },
-    name: { // Nombre
-      type: String, // Cadena
-      required: [true, "Student name is required."], // Obligatorio
-      trim: true, // Quitar espacios
+    // Matrícula o número de control; único DENTRO de la escuela
+    enrollment_number: {
+      type: String,
+      required: [true, "Enrollment number is required."],
+      trim: true,
+      uppercase: true,
     },
-    apellidos: { // Apellidos
-      type: String, // Cadena
-      required: [true, "Apellidos are required."], // Obligatorio
-      trim: true, // Quitar espacios
+    first_name: {
+      type: String,
+      required: [true, "First name is required."],
+      trim: true,
     },
-    tarjeta_rfid: { // Tag RFID
-      type: String, // Cadena
-      unique: true, // Sin duplicados
-      sparse: true, // Permitir ausentes
-      trim: true, // Quitar espacios
-      uppercase: true, // Normalizar a mayúsculas
+    last_name: {
+      type: String,
+      required: [true, "Last name is required."],
+      trim: true,
     },
-    tutores: { // Lista de tutores
-      type: [tutorSchema], // Arreglo de sub-esquemas
-      default: [], // Vacío por defecto
+    // UID de la tarjeta RFID; único DENTRO de la escuela (opcional)
+    rfid_card: {
+      type: String,
+      trim: true,
+      uppercase: true,
     },
-    current_group_id: { // Referencia al grupo
-      type: Schema.Types.ObjectId, // ObjectId
-      ref: "Group", // Colección relacionada
-      default: null, // Sin asignar
+    guardians: {
+      type: [guardianSchema],
+      default: [],
     },
-    status: { // Estado del estudiante
-      type: String, // Cadena
-      enum: { // Valores permitidos
-        values: ["activo", "baja_temporal", "baja_definitiva"],
+    current_group_id: {
+      type: Schema.Types.ObjectId,
+      ref: "Group",
+      default: null,
+    },
+    status: {
+      type: String,
+      enum: {
+        values: ["active", "withdrawn_temp", "withdrawn_permanent"],
         message:
-          "Status must be: activo, baja_temporal or baja_definitiva.",
+          "Status must be one of: active, withdrawn_temp, withdrawn_permanent.",
       },
-      default: "activo", // Estado por defecto
+      default: "active",
     },
   },
   {
-    timestamps: true, // createdAt + updatedAt
-    versionKey: false, // Sin __v
+    timestamps: true,
+    versionKey: false,
   }
 );
 
-studentSchema.index({ matricula: 1 }); // Búsqueda por matrícula
-studentSchema.index({ tarjeta_rfid: 1 }, { unique: true, sparse: true }); // Búsqueda por RFID
-studentSchema.index({ current_group_id: 1 }); // Filtro por grupo
-studentSchema.index({ apellidos: 1, name: 1 }); // Orden por nombre
-studentSchema.index({ "tutores.fcmToken": 1 }); // Búsqueda por token FCM
+// Índices únicos por escuela (reemplazan los uniques globales previos)
+studentSchema.index(
+  { school: 1, enrollment_number: 1 },
+  { unique: true, name: "uniq_school_enrollment_number" }
+);
+studentSchema.index(
+  { school: 1, rfid_card: 1 },
+  {
+    unique: true,
+    name: "uniq_school_rfid_card",
+    partialFilterExpression: { rfid_card: { $type: "string" } },
+  }
+);
 
-const Student = model("Student", studentSchema); // Compilar modelo
+studentSchema.index({ current_group_id: 1 });
+studentSchema.index({ last_name: 1, first_name: 1 });
+studentSchema.index({ "guardians.fcm_token": 1 });
 
-module.exports = Student; // Exportar
+const Student = model("Student", studentSchema);
+
+module.exports = Student;

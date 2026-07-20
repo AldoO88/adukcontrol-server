@@ -1,47 +1,55 @@
-const express = require("express"); // Módulo Express
-const { // Controladores
+// Router de Estudiantes
+// Endpoints bajo /api/students. Todos requieren JWT.
+// Escritura: admin o registrar. Lectura: cualquier rol del personal.
+const express = require("express");
+const {
   createStudent,
   getAllStudents,
   getStudentById,
   updateStudent,
   deleteStudent,
 } = require("../controllers/students.controller");
-const { isAuthenticated } = require("../middleware/jwt.middleware"); // Middleware JWT
-const { authorize } = require("../middleware/authorize.middleware"); // Middleware de roles
+const { isAuthenticated } = require("../middleware/jwt.middleware");
+const { authorize } = require("../middleware/authorize.middleware");
 
-const { Router } = express; // Desestructurar Router
-const router = Router(); // Construir sub-router
+const { Router } = express;
+const router = Router();
 
-router.use(isAuthenticated); // Requerir JWT válido en todas las rutas
+router.use(isAuthenticated); // Todas las rutas requieren JWT
 
-router.post( // POST /api/students/register
+// POST /api/students/register — crear estudiante
+router.post(
   "/register",
-  authorize("admin", "control_escolar"), // Solo admin o control escolar
+  authorize("admin", "registrar"),
   createStudent
 );
 
-router.get( // GET /api/students
+// GET /api/students — listar con paginación y filtros
+router.get(
   "/",
-  authorize("admin", "control_escolar", "maestro", "prefecto"), // Cualquier personal
+  authorize("admin", "principal", "registrar", "teacher", "prefect", "social_worker"),
   getAllStudents
 );
 
-router.get( // GET /api/students/:idStudent
-  "/:idStudent",
-  authorize("admin", "control_escolar", "maestro", "prefecto"), // Cualquier personal
+// GET /api/students/:studentId — detalle de un estudiante
+router.get(
+  "/:studentId",
+  authorize("admin", "principal", "registrar", "teacher", "prefect", "social_worker"),
   getStudentById
 );
 
-router.put( // PUT /api/students/:idStudent
-  "/:idStudent",
-  authorize("admin", "control_escolar"), // Solo admin o control escolar
+// PUT /api/students/:studentId — actualizar un estudiante
+router.put(
+  "/:studentId",
+  authorize("admin", "registrar"),
   updateStudent
 );
 
-router.delete( // DELETE /api/students/:idStudent
-  "/:idStudent",
-  authorize("admin", "control_escolar"), // Solo admin o control escolar
+// DELETE /api/students/:studentId — eliminar un estudiante
+router.delete(
+  "/:studentId",
+  authorize("admin", "registrar"),
   deleteStudent
 );
 
-module.exports = router; // Exportar
+module.exports = router;

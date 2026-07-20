@@ -1,49 +1,60 @@
-const { Schema, model } = require("mongoose"); // Constructores de Mongoose
+// Modelo de Inscripción
+// Relaciona a un estudiante con un grupo durante un ciclo escolar específico.
+// Cada inscripción pertenece a UNA escuela (tenant).
+const { Schema, model } = require("mongoose");
 
-const enrollmentSchema = new Schema( // Esquema de Inscripción
+const enrollmentSchema = new Schema(
   {
-    student_id: { // Referencia al estudiante
-      type: Schema.Types.ObjectId, // ObjectId
-      ref: "Student", // Colección relacionada
-      required: [true, "Student reference is required."], // Obligatorio
+    // Referencia a la escuela (tenant) — obligatoria para aislamiento multi-tenant
+    school: {
+      type: Schema.Types.ObjectId,
+      ref: "School",
+      required: [true, "School reference is required."],
+      index: true,
     },
-    group_id: { // Referencia al grupo
-      type: Schema.Types.ObjectId, // ObjectId
-      ref: "Group", // Colección relacionada
-      required: [true, "Group reference is required."], // Obligatorio
+    student_id: {
+      type: Schema.Types.ObjectId,
+      ref: "Student",
+      required: [true, "Student reference is required."],
     },
-    ciclo_escolar: { // Ciclo escolar
-      type: String, // Cadena
-      required: [true, "Ciclo escolar is required."], // Obligatorio
-      trim: true, // Quitar espacios
-      match: [ // Formato YYYY-YYYY
+    group_id: {
+      type: Schema.Types.ObjectId,
+      ref: "Group",
+      required: [true, "Group reference is required."],
+    },
+    school_year: {
+      type: String,
+      required: [true, "School year is required."],
+      trim: true,
+      match: [
         /^\d{4}-\d{4}$/,
-        "Ciclo escolar must follow the pattern YYYY-YYYY.",
+        "School year must follow the pattern YYYY-YYYY.",
       ],
     },
-    estatus_ciclo: { // Estado del ciclo
-      type: String, // Cadena
-      enum: { // Valores permitidos
-        values: ["inscrito", "baja", "egresado", "trasladado"],
+    cycle_status: {
+      type: String,
+      enum: {
+        values: ["enrolled", "withdrawn", "graduated", "transferred"],
         message:
-          "Estatus ciclo must be: inscrito, baja, egresado or trasladado.",
+          "Cycle status must be one of: enrolled, withdrawn, graduated, transferred.",
       },
-      default: "inscrito", // Estado por defecto
+      default: "enrolled",
     },
   },
   {
-    timestamps: true, // createdAt + updatedAt
-    versionKey: false, // Sin __v
+    timestamps: true,
+    versionKey: false,
   }
 );
 
-enrollmentSchema.index( // Una inscripción por estudiante y ciclo
-  { student_id: 1, ciclo_escolar: 1 },
-  { unique: true, name: "uniq_student_ciclo" }
+// Único DENTRO de la escuela: un estudiante solo tiene una inscripción por ciclo en su escuela
+enrollmentSchema.index(
+  { school: 1, student_id: 1, school_year: 1 },
+  { unique: true, name: "uniq_school_student_school_year" }
 );
-enrollmentSchema.index({ group_id: 1, ciclo_escolar: 1 }); // Búsquedas por grupo
-enrollmentSchema.index({ student_id: 1, estatus_ciclo: 1 }); // Historial del estudiante
+enrollmentSchema.index({ group_id: 1, school_year: 1 });
+enrollmentSchema.index({ student_id: 1, cycle_status: 1 });
 
-const Enrollment = model("Enrollment", enrollmentSchema); // Compilar modelo
+const Enrollment = model("Enrollment", enrollmentSchema);
 
-module.exports = Enrollment; // Exportar
+module.exports = Enrollment;

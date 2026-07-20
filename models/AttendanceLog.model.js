@@ -1,44 +1,57 @@
-const { Schema, model } = require("mongoose"); // Constructores de Mongoose
+// Modelo de Registro de Asistencia
+// Cada documento representa un evento de entrada o salida generado por un
+// dispositivo. Pertenece a UNA escuela (tenant) — se desnormaliza desde
+// el estudiante para acelerar consultas tenant-scoped.
+const { Schema, model } = require("mongoose");
 
-const attendanceLogSchema = new Schema( // Esquema de Registro de Asistencia
+const attendanceLogSchema = new Schema(
   {
-    student_id: { // Referencia al estudiante
-      type: Schema.Types.ObjectId, // ObjectId
-      ref: "Student", // Colección relacionada
-      required: [true, "Student reference is required."], // Obligatorio
+    // Referencia a la escuela (tenant) — obligatoria para aislamiento multi-tenant
+    school: {
+      type: Schema.Types.ObjectId,
+      ref: "School",
+      required: [true, "School reference is required."],
+      index: true,
     },
-    fecha_hora: { // Momento del evento
-      type: Date, // Fecha
-      required: [true, "Fecha hora is required."], // Obligatorio
-      default: Date.now, // Ahora si se omite
+    student_id: {
+      type: Schema.Types.ObjectId,
+      ref: "Student",
+      required: [true, "Student reference is required."],
     },
-    tipo: { // Tipo de evento
-      type: String, // Cadena
-      required: [true, "Tipo is required."], // Obligatorio
-      enum: { // Solo entrada o salida
-        values: ["entrada", "salida"],
-        message: "Tipo must be: entrada or salida.",
+    event_time: {
+      type: Date,
+      required: [true, "Event time is required."],
+      default: Date.now,
+    },
+    event_type: {
+      type: String,
+      required: [true, "Event type is required."],
+      enum: {
+        values: ["entry", "exit"],
+        message: "Event type must be: entry or exit.",
       },
     },
-    dispositivo: { // Dispositivo de origen
-      type: String, // Cadena
-      required: [true, "Dispositivo is required."], // Obligatorio
-      trim: true, // Quitar espacios
+    device: {
+      type: String,
+      required: [true, "Device is required."],
+      trim: true,
     },
-    notificacion_enviada: { // Bandera de envío FCM
-      type: Boolean, // Booleano
-      default: false, // No enviado aún
+    notification_sent: {
+      type: Boolean,
+      default: false,
     },
   },
   {
-    timestamps: true, // createdAt + updatedAt
-    versionKey: false, // Sin __v
+    timestamps: true,
+    versionKey: false,
   }
 );
 
-attendanceLogSchema.index({ student_id: 1, fecha_hora: -1 }); // Historial por estudiante
-attendanceLogSchema.index({ fecha_hora: -1, tipo: 1 }); // Búsquedas por fecha
+attendanceLogSchema.index({ student_id: 1, event_time: -1 });
+attendanceLogSchema.index({ event_time: -1, event_type: 1 });
+// Índice compuesto para el patrón de consulta más común: logs por escuela y fecha
+attendanceLogSchema.index({ school: 1, event_time: -1 });
 
-const AttendanceLog = model("AttendanceLog", attendanceLogSchema); // Compilar modelo
+const AttendanceLog = model("AttendanceLog", attendanceLogSchema);
 
-module.exports = AttendanceLog; // Exportar
+module.exports = AttendanceLog;

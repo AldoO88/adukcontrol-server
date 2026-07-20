@@ -1,38 +1,51 @@
-module.exports = (app) => { // Función exportada de cableado
-  app.use((req, res, next) => { // Catch-all 404
-    res.status(404).json({ message: "This route does not exist" }); // Respuesta 404
+// Manejo de errores y 404
+// Se monta al final del pipeline de middlewares de Express.
+// Captura errores de Mongoose (validación, cast, duplicados) y los traduce
+// a respuestas HTTP legibles.
+module.exports = (app) => {
+  // 404: cualquier ruta que no haya coincidido con un router llega aquí
+  app.use((req, res, next) => {
+    res.status(404).json({ message: "This route does not exist" });
   });
 
-  app.use((err, req, res, next) => { // Manejador central de errores
-    console.error("ERROR", req.method, req.path, err); // Registrar siempre
+  // Manejador central de errores
+  app.use((err, req, res, next) => {
+    // Loggear siempre para diagnóstico
+    console.error("ERROR", req.method, req.path, err);
 
-    if (err && err.name === "ValidationError") { // Validación de Mongoose
-      const messages = Object.values(err.errors || {}).map((e) => e.message); // Aplanar mensajes
-      if (!res.headersSent) { // Si aún no se respondió
-        return res.status(400).json({ message: messages.join(". ") }); // 400 con mensajes
+    // Error de validación de Mongoose: juntar todos los mensajes
+    if (err && err.name === "ValidationError") {
+      const messages = Object.values(err.errors || {}).map((e) => e.message);
+      if (!res.headersSent) {
+        return res.status(400).json({ message: messages.join(". ") });
       }
     }
 
-    if (err && err.code === 11000) { // Clave duplicada
-      const value = err.keyValue ? JSON.stringify(err.keyValue) : "duplicate value"; // Detalle
-      if (!res.headersSent) { // Si aún no se respondió
-        return res // 409 conflicto
+    // Error de clave duplicada (MongoDB error 11000)
+    if (err && err.code === 11000) {
+      const value = err.keyValue ? JSON.stringify(err.keyValue) : "duplicate value";
+      if (!res.headersSent) {
+        return res
           .status(409)
           .json({ message: `Duplicate field value: ${value}. Please use another value.` });
       }
     }
 
-    if (err && err.name === "CastError") { // Cast inválido (ObjectId mal formado)
-      if (!res.headersSent) { // Si aún no se respondió
-        return res // 400
+    // Cast inválido (típicamente un ObjectId mal formado en un parámetro)
+    if (err && err.name === "CastError") {
+      if (!res.headersSent) {
+        return res
           .status(400)
           .json({ message: `Invalid value for field '${err.path}'.` });
       }
     }
 
-    if (!res.headersSent) { // Render de respaldo
-      res.status(err.status || 500).json({ // Código de estado
-        message: // Mensaje humano
+    // Render de respaldo: nunca enviar un 500 sin cuerpo
+    if (!res.headersSent) {
+      res.status(err.status || 500).json({
+        // Para errores 4xx, mostrar el mensaje del error (puede ser de Mongoose/AppError)
+        // Para 5xx, no filtrar detalles internos al cliente
+        message:
           err.status && err.status < 500
             ? err.message
             : "Internal server error. Check the server console",

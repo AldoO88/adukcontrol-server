@@ -1,101 +1,124 @@
-const mongoose = require("mongoose"); // Mongoose para validar ObjectId
-const Group = require("../models/Group.model"); // Modelo de Grupo
+// Controlador de Grupos
+// Operaciones CRUD sobre el recurso Group, con aislamiento multi-tenant.
+const mongoose = require("mongoose");
+const Group = require("../models/Group.model");
 
-const getAllGroups = async (req, res, next) => { // GET /api/groups
+const tenantFilter = (req) =>
+  req.payload.role === "super_admin" ? {} : { school: req.payload.schoolId };
+
+// GET /api/groups
+const getAllGroups = async (req, res, next) => {
   try {
-    const groups = await Group.find() // Consultar todos
-      .populate("tutor_maestro_id", "name email role") // Unir maestro
-      .sort({ grado: 1, grupo: 1, ciclo_escolar: 1 }); // Orden
-    res.status(200).json(groups); // 200 + lista
+    const groups = await Group.find(tenantFilter(req))
+      .populate("head_teacher_id", "first_name last_name email role")
+      .sort({ grade: 1, section: 1, school_year: 1 });
+    res.status(200).json(groups);
   } catch (error) {
-    next(error); // Propagar
+    next(error);
   }
 };
 
-const createGroup = async (req, res, next) => { // POST /api/groups
+// POST /api/groups
+const createGroup = async (req, res, next) => {
   try {
-    const { grado, grupo, ciclo_escolar, tutor_maestro_id } = req.body; // Desestructurar
+    const isSuperAdmin = req.payload.role === "super_admin";
+    const payload = { ...req.body };
 
-    const newGroup = await Group.create({ // Mongoose valida
-      grado,
-      grupo,
-      ciclo_escolar,
-      tutor_maestro_id,
-    });
-
-    res.status(201).json(newGroup); // 201 + documento
-  } catch (error) {
-    next(error); // Propagar
-  }
-};
-
-const getGroupById = async (req, res, next) => { // GET /api/groups/:idGroup
-  try {
-    const { idGroup } = req.params; // Parámetro
-
-    if (!mongoose.Types.ObjectId.isValid(idGroup)) { // ID inválido
-      return res.status(404).json({ message: `No group with id: ${idGroup}` });
+    if (isSuperAdmin) {
+      if (!payload.school) {
+        return res
+          .status(400)
+          .json({ message: "school is required in body for super_admin." });
+      }
+    } else {
+      payload.school = req.payload.schoolId;
     }
 
-    const group = await Group.findById(idGroup).populate( // Buscar
-      "tutor_maestro_id",
-      "name email role"
+    const newGroup = await Group.create(payload);
+    res.status(201).json(newGroup);
+  } catch (error) {
+    next(error);
+  }
+};
+
+// GET /api/groups/:groupId
+const getGroupById = async (req, res, next) => {
+  try {
+    const { groupId } = req.params;
+
+    if (!mongoose.Types.ObjectId.isValid(groupId)) {
+      return res.status(404).json({ message: `No group with id: ${groupId}` });
+    }
+
+    const group = await Group.findOne({
+      _id: groupId,
+      ...tenantFilter(req),
+    }).populate("head_teacher_id", "first_name last_name email role");
+
+    if (!group) {
+      return res.status(404).json({ message: `No group with id: ${groupId}` });
+    }
+
+    res.status(200).json(group);
+  } catch (error) {
+    next(error);
+  }
+};
+
+// PUT /api/groups/:groupId
+const updateGroup = async (req, res, next) => {
+  try {
+    const { groupId } = req.params;
+
+    if (!mongoose.Types.ObjectId.isValid(groupId)) {
+      return res.status(404).json({ message: `No group with id: ${groupId}` });
+    }
+
+    if (req.payload.role !== "super_admin") {
+      delete req.body.school;
+    }
+
+    const updated = await Group.findOneAndUpdate(
+      { _id: groupId, ...tenantFilter(req) },
+      req.body,
+      { new: true, runValidators: true }
     );
 
-    if (!group) { // No encontrado
-      return res.status(404).json({ message: `No group with id: ${idGroup}` });
+    if (!updated) {
+      return res.status(404).json({ message: `No group with id: ${groupId}` });
     }
 
-    res.status(200).json(group); // 200 OK
+    res.status(200).json(updated);
   } catch (error) {
-    next(error); // Propagar
+    next(error);
   }
 };
 
-const updateGroup = async (req, res, next) => { // PUT /api/groups/:idGroup
+// DELETE /api/groups/:groupId
+const deleteGroup = async (req, res, next) => {
   try {
-    const { idGroup } = req.params; // Parámetro
+    const { groupId } = req.params;
 
-    if (!mongoose.Types.ObjectId.isValid(idGroup)) { // ID inválido
-      return res.status(404).json({ message: `No group with id: ${idGroup}` });
+    if (!mongoose.Types.ObjectId.isValid(groupId)) {
+      return res.status(404).json({ message: `No group with id: ${groupId}` });
     }
 
-    const updated = await Group.findByIdAndUpdate(idGroup, req.body, { // Actualizar
-      new: true, // Devolver actualizado
-      runValidators: true, // Re-validar
+    const deleted = await Group.findOneAndDelete({
+      _id: groupId,
+      ...tenantFilter(req),
     });
 
-    if (!updated) { // No encontrado
-      return res.status(404).json({ message: `No group with id: ${idGroup}` });
+    if (!deleted) {
+      return res.status(404).json({ message: `No group with id: ${groupId}` });
     }
 
-    res.status(200).json(updated); // 200 + documento
+    res.status(200).json({ message: "Group deleted successfully" });
   } catch (error) {
-    next(error); // Propagar
+    next(error);
   }
 };
 
-const deleteGroup = async (req, res, next) => { // DELETE /api/groups/:idGroup
-  try {
-    const { idGroup } = req.params; // Parámetro
-
-    if (!mongoose.Types.ObjectId.isValid(idGroup)) { // ID inválido
-      return res.status(404).json({ message: `No group with id: ${idGroup}` });
-    }
-
-    const deleted = await Group.findByIdAndDelete(idGroup); // Eliminar
-
-    if (!deleted) { // No encontrado
-      return res.status(404).json({ message: `No group with id: ${idGroup}` });
-    }
-
-    res.status(200).json({ message: "Group deleted successfully" }); // 200 OK
-  } catch (error) {
-    next(error); // Propagar
-  }
-};
-
-module.exports = { // Exportar
+module.exports = {
   getAllGroups,
   createGroup,
   getGroupById,

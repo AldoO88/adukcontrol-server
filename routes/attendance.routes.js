@@ -1,36 +1,45 @@
-const express = require("express"); // Módulo Express
-const rateLimit = require("express-rate-limit"); // Middleware de rate limiting
-const { // Controladores
+// Router de Asistencia
+// Endpoints bajo /api/attendance.
+// /device-trigger usa API key del dispositivo; el resto usa JWT.
+const express = require("express");
+const rateLimit = require("express-rate-limit");
+const {
   deviceTriggerController,
   getAttendanceLogsController,
 } = require("../controllers/attendance.controller");
-const { isAuthenticated } = require("../middleware/jwt.middleware"); // Middleware JWT
-const { authorize } = require("../middleware/authorize.middleware"); // Middleware de roles
-const { verifyDeviceApiKey } = require("../middleware/device.middleware"); // Auth de dispositivo
+const { isAuthenticated } = require("../middleware/jwt.middleware");
+const { authorize } = require("../middleware/authorize.middleware");
+const { verifyDeviceApiKey } = require("../middleware/device.middleware");
 
-const { Router } = express; // Desestructurar Router
-const router = Router(); // Construir sub-router
+const { Router } = express;
+const router = Router();
 
-const deviceLimiter = rateLimit({ // Limitador más estricto para hardware
+// Rate limiter más estricto para el endpoint de dispositivos:
+// 300 peticiones por minuto por IP (los lectores pueden hacer polling).
+const deviceLimiter = rateLimit({
   windowMs: 1 * 60 * 1000, // Ventana de 1 minuto
-  max: 300, // 300 solicitudes por minuto
-  standardHeaders: true, // Cabeceras RateLimit-*
-  legacyHeaders: false, // Sin X-RateLimit-*
-  message: { message: "Too many device requests, please slow down." }, // Cuerpo 429
+  max: 300,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { message: "Too many device requests, please slow down." },
 });
 
-router.post( // POST /api/attendance/device-trigger
+// POST /api/attendance/device-trigger
+// Lo consumen los lectores RFID/cámaras. Auth: API key del dispositivo.
+router.post(
   "/device-trigger",
-  deviceLimiter, // Throttling
-  verifyDeviceApiKey, // Verificación de API key
-  deviceTriggerController // Manejador
+  deviceLimiter,
+  verifyDeviceApiKey,
+  deviceTriggerController
 );
 
-router.get( // GET /api/attendance/logs
+// GET /api/attendance/logs
+// Consulta del historial. Auth: JWT + cualquier rol del personal.
+router.get(
   "/logs",
-  isAuthenticated, // Requiere JWT
-  authorize("admin", "control_escolar", "maestro", "prefecto"), // Cualquier personal
-  getAttendanceLogsController // Manejador
+  isAuthenticated,
+  authorize("admin", "principal", "registrar", "teacher", "prefect", "social_worker"),
+  getAttendanceLogsController
 );
 
-module.exports = router; // Exportar
+module.exports = router;

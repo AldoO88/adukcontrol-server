@@ -1,48 +1,54 @@
+// Punto de entrada de la aplicación Express.
+// Construye la app con todos sus middlewares y rutas, y la exporta.
+// El listener HTTP y el manejo de señales de cierre viven en server.js.
 require("dotenv").config(); // Cargar variables de entorno desde .env
 
-require("./db"); // Activar conexión a MongoDB
+require("./db"); // Iniciar conexión a MongoDB al importar
 
-const notificationService = require("./services/notification.service"); // Wrapper de Firebase Admin
-notificationService.initializeFirebase(); // Inicializar FCM al arrancar (no falla si no está configurado)
+const notificationService = require("./services/notification.service");
+notificationService.initializeFirebase(); // Inicializar FCM (no falla si no está configurado)
 
-const cors = require("cors"); // Middleware CORS
-const express = require("express"); // Framework Express
+const cors = require("cors");
+const express = require("express");
 
-const app = express(); // Instancia de la aplicación
+const app = express();
 
-app.get("/health", (req, res) => { // Endpoint de health check
-  res.status(200).json({ // Respuesta 200 OK
-    success: true, // Bandera de éxito
-    service: "eduk-control-backend", // Nombre del servicio
-    status: "ok", // Estado del servicio
-    uptime: process.uptime(), // Tiempo activo en segundos
-    timestamp: new Date().toISOString(), // Marca de tiempo ISO actual
+// Health check: útil para balanceadores y para verificar que el server responde
+app.get("/health", (req, res) => {
+  res.status(200).json({
+    success: true,
+    service: "eduk-control-backend",
+    status: "ok",
+    uptime: process.uptime(),
+    timestamp: new Date().toISOString(),
   });
 });
 
-app.get("/", (req, res) => { // Banner en la raíz
-  res.status(200).json({ // Respuesta 200 OK
-    message: "Eduk Control Backend API is running.", // Mensaje del banner
-    version: "1.0.0", // Versión de la API
-    docs: "/api", // Apuntador a documentación
+// Banner de la raíz para identificar el servicio al hacer GET /
+app.get("/", (req, res) => {
+  res.status(200).json({
+    message: "Eduk Control Backend API is running.",
+    version: "1.0.0",
+    docs: "/api",
   });
 });
 
-app.use( // CORS antes del resto de la configuración
+// CORS antes de montar el resto
+app.use(
   cors({
-    origin: process.env.ORIGIN || "http://localhost:5173", // Origen permitido
-    credentials: true, // Permitir envío de credenciales
+    origin: process.env.ORIGIN || "http://localhost:5173",
+    credentials: true,
   })
 );
 
-require("./config")(app); // Montar middleware global
+require("./config")(app); // Middlewares globales (helmet, parsers, logger, etc.)
 
-const indexRoutes = require("./routes/index.routes"); // Agregador de rutas bajo /api
-const authRouter = require("./routes/auth.routes"); // Rutas bajo /auth
+const indexRoutes = require("./routes/index.routes");
+const authRouter = require("./routes/auth.routes");
 
-app.use("/api", indexRoutes); // Montar rutas en /api
-app.use("/auth", authRouter); // Montar rutas en /auth
+app.use("/api", indexRoutes); // /api/students, /api/attendance, /api/groups, /api/enrollments
+app.use("/auth", authRouter); // /auth/signup, /auth/login, /auth/verify
 
-require("./error-handling")(app); // Montar 404 y manejador de errores
+require("./error-handling")(app); // 404 + manejador central de errores
 
-module.exports = app; // Exportar para pruebas
+module.exports = app;

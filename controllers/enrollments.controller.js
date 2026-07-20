@@ -1,126 +1,152 @@
-const mongoose = require("mongoose"); // Mongoose para validar ObjectId
-const Enrollment = require("../models/Enrollment.model"); // Modelo de Inscripción
+// Controlador de Inscripciones
+// Operaciones CRUD sobre el recurso Enrollment, con aislamiento multi-tenant.
+const mongoose = require("mongoose");
+const Enrollment = require("../models/Enrollment.model");
 
-const getAllEnrollments = async (req, res, next) => { // GET /api/enrollments
+const tenantFilter = (req) =>
+  req.payload.role === "super_admin" ? {} : { school: req.payload.schoolId };
+
+// GET /api/enrollments
+const getAllEnrollments = async (req, res, next) => {
   try {
-    const { student_id, group_id, ciclo_escolar, estatus_ciclo } = req.query; // Filtros
+    const { student_id, group_id, school_year, cycle_status } = req.query;
 
-    const filter = {}; // Filtro inicial
-    if (student_id && mongoose.Types.ObjectId.isValid(student_id)) { // ID válido
-      filter.student_id = student_id; // Filtrar por estudiante
+    const filter = { ...tenantFilter(req) };
+    if (student_id && mongoose.Types.ObjectId.isValid(student_id)) {
+      filter.student_id = student_id;
     }
-    if (group_id && mongoose.Types.ObjectId.isValid(group_id)) { // ID válido
-      filter.group_id = group_id; // Filtrar por grupo
+    if (group_id && mongoose.Types.ObjectId.isValid(group_id)) {
+      filter.group_id = group_id;
     }
-    if (ciclo_escolar) filter.ciclo_escolar = ciclo_escolar; // Filtrar por ciclo
-    if (estatus_ciclo) filter.estatus_ciclo = estatus_ciclo; // Filtrar por estatus
+    if (school_year) filter.school_year = school_year;
+    if (cycle_status) filter.cycle_status = cycle_status;
 
-    const enrollments = await Enrollment.find(filter) // Consultar
-      .populate("student_id", "matricula name apellidos") // Unir estudiante
-      .populate("group_id", "grado grupo ciclo_escolar") // Unir grupo
-      .sort({ createdAt: -1 }); // Más reciente primero
+    const enrollments = await Enrollment.find(filter)
+      .populate("student_id", "enrollment_number first_name last_name")
+      .populate("group_id", "grade section school_year")
+      .sort({ createdAt: -1 });
 
-    res.status(200).json(enrollments); // 200 + lista
+    res.status(200).json(enrollments);
   } catch (error) {
-    next(error); // Propagar
+    next(error);
   }
 };
 
-const createEnrollment = async (req, res, next) => { // POST /api/enrollments
+// POST /api/enrollments
+const createEnrollment = async (req, res, next) => {
   try {
-    const { student_id, group_id, ciclo_escolar, estatus_ciclo } = req.body; // Desestructurar
+    const isSuperAdmin = req.payload.role === "super_admin";
+    const payload = { ...req.body };
 
-    const newEnrollment = await Enrollment.create({ // Mongoose valida
-      student_id,
-      group_id,
-      ciclo_escolar,
-      estatus_ciclo,
+    if (isSuperAdmin) {
+      if (!payload.school) {
+        return res
+          .status(400)
+          .json({ message: "school is required in body for super_admin." });
+      }
+    } else {
+      payload.school = req.payload.schoolId;
+    }
+
+    const newEnrollment = await Enrollment.create(payload);
+    res.status(201).json(newEnrollment);
+  } catch (error) {
+    next(error);
+  }
+};
+
+// GET /api/enrollments/:enrollmentId
+const getEnrollmentById = async (req, res, next) => {
+  try {
+    const { enrollmentId } = req.params;
+
+    if (!mongoose.Types.ObjectId.isValid(enrollmentId)) {
+      return res
+        .status(404)
+        .json({ message: `No enrollment with id: ${enrollmentId}` });
+    }
+
+    const enrollment = await Enrollment.findOne({
+      _id: enrollmentId,
+      ...tenantFilter(req),
+    })
+      .populate("student_id", "enrollment_number first_name last_name")
+      .populate("group_id", "grade section school_year");
+
+    if (!enrollment) {
+      return res
+        .status(404)
+        .json({ message: `No enrollment with id: ${enrollmentId}` });
+    }
+
+    res.status(200).json(enrollment);
+  } catch (error) {
+    next(error);
+  }
+};
+
+// PUT /api/enrollments/:enrollmentId
+const updateEnrollment = async (req, res, next) => {
+  try {
+    const { enrollmentId } = req.params;
+
+    if (!mongoose.Types.ObjectId.isValid(enrollmentId)) {
+      return res
+        .status(404)
+        .json({ message: `No enrollment with id: ${enrollmentId}` });
+    }
+
+    if (req.payload.role !== "super_admin") {
+      delete req.body.school;
+    }
+
+    const updated = await Enrollment.findOneAndUpdate(
+      { _id: enrollmentId, ...tenantFilter(req) },
+      req.body,
+      { new: true, runValidators: true }
+    );
+
+    if (!updated) {
+      return res
+        .status(404)
+        .json({ message: `No enrollment with id: ${enrollmentId}` });
+    }
+
+    res.status(200).json(updated);
+  } catch (error) {
+    next(error);
+  }
+};
+
+// DELETE /api/enrollments/:enrollmentId
+const deleteEnrollment = async (req, res, next) => {
+  try {
+    const { enrollmentId } = req.params;
+
+    if (!mongoose.Types.ObjectId.isValid(enrollmentId)) {
+      return res
+        .status(404)
+        .json({ message: `No enrollment with id: ${enrollmentId}` });
+    }
+
+    const deleted = await Enrollment.findOneAndDelete({
+      _id: enrollmentId,
+      ...tenantFilter(req),
     });
 
-    res.status(201).json(newEnrollment); // 201 + documento
+    if (!deleted) {
+      return res
+        .status(404)
+        .json({ message: `No enrollment with id: ${enrollmentId}` });
+    }
+
+    res.status(200).json({ message: "Enrollment deleted successfully" });
   } catch (error) {
-    next(error); // Propagar
+    next(error);
   }
 };
 
-const getEnrollmentById = async (req, res, next) => { // GET /api/enrollments/:idEnrollment
-  try {
-    const { idEnrollment } = req.params; // Parámetro
-
-    if (!mongoose.Types.ObjectId.isValid(idEnrollment)) { // ID inválido
-      return res
-        .status(404)
-        .json({ message: `No enrollment with id: ${idEnrollment}` });
-    }
-
-    const enrollment = await Enrollment.findById(idEnrollment) // Buscar
-      .populate("student_id", "matricula name apellidos") // Unir estudiante
-      .populate("group_id", "grado grupo ciclo_escolar"); // Unir grupo
-
-    if (!enrollment) { // No encontrado
-      return res
-        .status(404)
-        .json({ message: `No enrollment with id: ${idEnrollment}` });
-    }
-
-    res.status(200).json(enrollment); // 200 OK
-  } catch (error) {
-    next(error); // Propagar
-  }
-};
-
-const updateEnrollment = async (req, res, next) => { // PUT /api/enrollments/:idEnrollment
-  try {
-    const { idEnrollment } = req.params; // Parámetro
-
-    if (!mongoose.Types.ObjectId.isValid(idEnrollment)) { // ID inválido
-      return res
-        .status(404)
-        .json({ message: `No enrollment with id: ${idEnrollment}` });
-    }
-
-    const updated = await Enrollment.findByIdAndUpdate(idEnrollment, req.body, { // Actualizar
-      new: true, // Devolver actualizado
-      runValidators: true, // Re-validar
-    });
-
-    if (!updated) { // No encontrado
-      return res
-        .status(404)
-        .json({ message: `No enrollment with id: ${idEnrollment}` });
-    }
-
-    res.status(200).json(updated); // 200 + documento
-  } catch (error) {
-    next(error); // Propagar
-  }
-};
-
-const deleteEnrollment = async (req, res, next) => { // DELETE /api/enrollments/:idEnrollment
-  try {
-    const { idEnrollment } = req.params; // Parámetro
-
-    if (!mongoose.Types.ObjectId.isValid(idEnrollment)) { // ID inválido
-      return res
-        .status(404)
-        .json({ message: `No enrollment with id: ${idEnrollment}` });
-    }
-
-    const deleted = await Enrollment.findByIdAndDelete(idEnrollment); // Eliminar
-
-    if (!deleted) { // No encontrado
-      return res
-        .status(404)
-        .json({ message: `No enrollment with id: ${idEnrollment}` });
-    }
-
-    res.status(200).json({ message: "Enrollment deleted successfully" }); // 200 OK
-  } catch (error) {
-    next(error); // Propagar
-  }
-};
-
-module.exports = { // Exportar
+module.exports = {
   getAllEnrollments,
   createEnrollment,
   getEnrollmentById,

@@ -1,39 +1,51 @@
-const express = require("express"); // Módulo Express
-const { // Controladores
+// Router de Grupos
+// Endpoints bajo /api/groups. Todos requieren JWT.
+// Escritura: admin o registrar. Lectura: cualquier rol del personal.
+const express = require("express");
+const {
   getAllGroups,
   createGroup,
   getGroupById,
   updateGroup,
   deleteGroup,
 } = require("../controllers/groups.controller");
-const { isAuthenticated } = require("../middleware/jwt.middleware"); // Middleware JWT
-const { authorize } = require("../middleware/authorize.middleware"); // Middleware de roles
+const { isAuthenticated } = require("../middleware/jwt.middleware");
+const { authorize } = require("../middleware/authorize.middleware");
 
-const { Router } = express; // Desestructurar Router
-const router = Router(); // Construir sub-router
+const { Router } = express;
+const router = Router();
 
-router.use(isAuthenticated); // Requerir JWT válido
+router.use(isAuthenticated);
 
-router.get( // GET /api/groups
+// GET /api/groups — listar todos los grupos
+router.get(
   "/",
-  authorize("admin", "control_escolar", "maestro", "prefecto"), // Cualquier personal
+  authorize("admin", "principal", "registrar", "teacher", "prefect", "social_worker"),
   getAllGroups
 );
-router.post("/", authorize("admin", "control_escolar"), createGroup); // POST /api/groups
-router.get( // GET /api/groups/:idGroup
-  "/:idGroup",
-  authorize("admin", "control_escolar", "maestro", "prefecto"), // Cualquier personal
+
+// POST /api/groups — crear un grupo
+router.post("/", authorize("admin", "registrar"), createGroup);
+
+// GET /api/groups/:groupId — detalle de un grupo
+router.get(
+  "/:groupId",
+  authorize("admin", "principal", "registrar", "teacher", "prefect", "social_worker"),
   getGroupById
 );
-router.put( // PUT /api/groups/:idGroup
-  "/:idGroup",
-  authorize("admin", "control_escolar"), // Solo admin o control escolar
+
+// PUT /api/groups/:groupId — actualizar un grupo
+router.put(
+  "/:groupId",
+  authorize("admin", "registrar"),
   updateGroup
 );
-router.delete( // DELETE /api/groups/:idGroup
-  "/:idGroup",
-  authorize("admin", "control_escolar"), // Solo admin o control escolar
+
+// DELETE /api/groups/:groupId — eliminar un grupo
+router.delete(
+  "/:groupId",
+  authorize("admin", "registrar"),
   deleteGroup
 );
 
-module.exports = router; // Exportar
+module.exports = router;

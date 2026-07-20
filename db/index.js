@@ -1,14 +1,19 @@
-const mongoose = require("mongoose"); // ODM para MongoDB
+// Conexión a MongoDB
+// Al importar este módulo, se inicia el intento de conexión.
+// Si falla, el proceso se cierra con código 1.
+const mongoose = require("mongoose");
 
-const MONGO_URI = process.env.MONGO_URI || "mongodb://127.0.0.1:27017/eduk_control"; // URI de conexión
+const MONGO_URI = process.env.MONGO_URI || "mongodb://127.0.0.1:27017/eduk_control";
 
-mongoose // Iniciar la conexión
-  .connect(MONGO_URI) // Promesa que resuelve al conectar
-  .then((x) => { // Al conectar exitosamente
-    const dbName = x.connections[0].name; // Extraer nombre de la base
-    console.log(`Connected to Mongo! Database name: "${dbName}"`); // Confirmar
+mongoose
+  .connect(MONGO_URI)
+  .then((x) => {
+    // Conexión exitosa: loggear el nombre de la base para confirmar
+    const dbName = x.connections[0].name;
+    console.log(`Connected to Mongo! Database name: "${dbName}"`);
   })
-  .catch((err) => { // Al fallar la conexión
-    console.error("Error connecting to mongo: ", err); // Registrar el error
-    process.exit(1); // Fallar rápido
+  .catch((err) => {
+    // Conexión fallida: registrar y abortar el proceso
+    console.error("Error connecting to mongo: ", err);
+    process.exit(1);
   });

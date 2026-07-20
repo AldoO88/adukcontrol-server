@@ -1,48 +1,59 @@
-const { Schema, model } = require("mongoose"); // Constructores de Mongoose
+// Modelo de Grupo/Grado
+// Representa una sección/clase de un grado específico en un ciclo escolar.
+// Cada grupo pertenece a UNA escuela (tenant).
+const { Schema, model } = require("mongoose");
 
-const groupSchema = new Schema( // Esquema de Grupo
+const groupSchema = new Schema(
   {
-    grado: { // Nivel/grado escolar
-      type: Number, // Numérico
-      required: [true, "Grado is required."], // Obligatorio
-      enum: { // Solo 1, 2, 3
+    // Referencia a la escuela (tenant) — obligatoria para aislamiento multi-tenant
+    school: {
+      type: Schema.Types.ObjectId,
+      ref: "School",
+      required: [true, "School reference is required."],
+      index: true,
+    },
+    grade: {
+      type: Number,
+      required: [true, "Grade is required."],
+      enum: {
         values: [1, 2, 3],
-        message: "Grado must be 1, 2 or 3.",
+        message: "Grade must be 1, 2 or 3.",
       },
     },
-    grupo: { // Letra de sección
-      type: String, // Cadena
-      required: [true, "Grupo is required."], // Obligatorio
-      trim: true, // Quitar espacios
-      uppercase: true, // Normalizar a mayúsculas
+    section: {
+      type: String,
+      required: [true, "Section is required."],
+      trim: true,
+      uppercase: true,
     },
-    ciclo_escolar: { // Ciclo escolar
-      type: String, // Cadena
-      required: [true, "Ciclo escolar is required."], // Obligatorio
-      trim: true, // Quitar espacios
-      match: [ // Formato YYYY-YYYY
+    school_year: {
+      type: String,
+      required: [true, "School year is required."],
+      trim: true,
+      match: [
         /^\d{4}-\d{4}$/,
-        "Ciclo escolar must follow the pattern YYYY-YYYY.",
+        "School year must follow the pattern YYYY-YYYY.",
       ],
     },
-    tutor_maestro_id: { // Maestro titular
-      type: Schema.Types.ObjectId, // ObjectId
-      ref: "User", // Colección relacionada
-      default: null, // Sin asignar
+    head_teacher_id: {
+      type: Schema.Types.ObjectId,
+      ref: "User",
+      default: null,
     },
   },
   {
-    timestamps: true, // createdAt + updatedAt
-    versionKey: false, // Sin __v
+    timestamps: true,
+    versionKey: false,
   }
 );
 
-groupSchema.index( // Combinación única grado+grupo+ciclo
-  { grado: 1, grupo: 1, ciclo_escolar: 1 },
-  { unique: true, name: "uniq_grado_grupo_ciclo" }
+// Único DENTRO de la escuela: mismo grado+sección+ciclo puede existir en otra escuela
+groupSchema.index(
+  { school: 1, grade: 1, section: 1, school_year: 1 },
+  { unique: true, name: "uniq_school_grade_section_year" }
 );
-groupSchema.index({ tutor_maestro_id: 1 }); // Búsqueda por maestro
+groupSchema.index({ head_teacher_id: 1 });
 
-const Group = model("Group", groupSchema); // Compilar modelo
+const Group = model("Group", groupSchema);
 
-module.exports = Group; // Exportar
+module.exports = Group;

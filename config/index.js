@@ -1,34 +1,49 @@
-const express = require("express"); // Express (solo para tipos)
+// Configuración global de Express
+// Monta middlewares de seguridad, parsers, CORS y logger.
+// Es una función que recibe la app de Express y la muta con el middleware.
+const express = require("express");
 const logger = require("morgan"); // Logger de peticiones HTTP
 const cookieParser = require("cookie-parser"); // Parser de cookies
 const cors = require("cors"); // Middleware CORS
 const helmet = require("helmet"); // Cabeceras de seguridad
-const mongoSanitize = require("express-mongo-sanitize"); // Sanitizar claves $ y .
-const hpp = require("hpp"); // Prevenir pollution de parámetros
+const mongoSanitize = require("express-mongo-sanitize"); // Sanitiza claves $ y .
+const hpp = require("hpp"); // Previene HTTP parameter pollution
 
-const FRONTEND_URL = process.env.ORIGIN || "http://localhost:5173"; // Origen permitido
+const FRONTEND_URL = process.env.ORIGIN || "http://localhost:5173"; // Origen del frontend
 
-module.exports = (app) => { // Exporta una función de configuración
-  app.set("trust proxy", 1); // Confiar en X-Forwarded-For de un único proxy
+module.exports = (app) => {
+  // Confiar en X-Forwarded-For de un único proxy (importante para que
+  // express-rate-limit identifique correctamente la IP del cliente).
+  app.set("trust proxy", 1);
 
-  app.use( // Configurar CORS
+  // CORS: permitir el frontend configurado, con credenciales
+  app.use(
     cors({
-      origin: process.env.ORIGIN || FRONTEND_URL, // Origen permitido
-      methods: ["GET", "POST", "PUT", "PATCH", "DELETE"], // Métodos permitidos
-      allowedHeaders: ["Content-Type", "Authorization"], // Cabeceras permitidas
-      credentials: true, // Permitir cookies
+      origin: process.env.ORIGIN || FRONTEND_URL,
+      methods: ["GET", "POST", "PUT", "PATCH", "DELETE"],
+      allowedHeaders: ["Content-Type", "Authorization"],
+      credentials: true,
     })
   );
 
-  app.use(helmet()); // Cabeceras de seguridad por defecto
-  app.use(mongoSanitize()); // Sanitizar body/query/params
-  app.use(hpp()); // Prevenir HTTP parameter pollution
+  // Cabeceras de seguridad por defecto
+  app.use(helmet());
 
-  if (process.env.NODE_ENV !== "test") { // Omitir logs en pruebas
-    app.use(logger(process.env.NODE_ENV === "production" ? "combined" : "dev")); // Logger HTTP
+  // Sanitizar body/query/params para evitar inyección de operadores de Mongo
+  app.use(mongoSanitize());
+
+  // Prevenir HTTP parameter pollution (por ejemplo, ?status=a&status=b)
+  app.use(hpp());
+
+  // Logger HTTP solo fuera de tests
+  if (process.env.NODE_ENV !== "test") {
+    app.use(logger(process.env.NODE_ENV === "production" ? "combined" : "dev"));
   }
 
-  app.use(express.json({ limit: "1mb" })); // Parser de cuerpo JSON (1MB)
-  app.use(express.urlencoded({ extended: false, limit: "1mb" })); // Parser de formularios
-  app.use(cookieParser()); // Parser de cookies
+  // Parsers de cuerpo: JSON y urlencoded, con límite de 1MB
+  app.use(express.json({ limit: "1mb" }));
+  app.use(express.urlencoded({ extended: false, limit: "1mb" }));
+
+  // Parser de cookies
+  app.use(cookieParser());
 };

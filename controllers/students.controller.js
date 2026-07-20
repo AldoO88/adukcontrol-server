@@ -1,159 +1,185 @@
-const mongoose = require("mongoose"); // Mongoose para validar ObjectId
-const Student = require("../models/Student.model"); // Modelo de Estudiante
+// Controlador de Estudiantes
+// Operaciones CRUD sobre el recurso Student, con aislamiento multi-tenant.
+// Todas las queries se filtran por la escuela del usuario autenticado
+// (req.payload.schoolId), salvo para super_admin que ve todas las escuelas.
+const mongoose = require("mongoose");
+const Student = require("../models/Student.model");
 
-const createStudent = async (req, res, next) => { // POST /api/students/register
+// Helper: devuelve el filtro base de tenant.
+// super_admin no filtra; el resto ve solo su escuela.
+const tenantFilter = (req) =>
+  req.payload.role === "super_admin" ? {} : { school: req.payload.schoolId };
+
+// POST /api/students/register
+// Crea un estudiante. El school se asigna automáticamente desde el JWT
+// (super_admin puede especificar otro school en el body).
+const createStudent = async (req, res, next) => {
   try {
-    const { // Desestructurar cuerpo
-      matricula,
-      name,
-      apellidos,
-      tarjeta_rfid,
-      tutores,
-      current_group_id,
-      status,
-    } = req.body;
+    const isSuperAdmin = req.payload.role === "super_admin";
+    const payload = { ...req.body };
 
-    const newStudent = await Student.create({ // Mongoose valida
-      matricula,
-      name,
-      apellidos,
-      tarjeta_rfid,
-      tutores,
-      current_group_id,
-      status,
-    });
+    if (isSuperAdmin) {
+      // super_admin DEBE especificar la escuela destino en el body
+      if (!payload.school) {
+        return res
+          .status(400)
+          .json({ message: "school is required in body for super_admin." });
+      }
+    } else {
+      // Cualquier otro rol: forzar la escuela del usuario autenticado
+      payload.school = req.payload.schoolId;
+    }
 
-    res.status(201).json(newStudent); // 201 + documento
+    const newStudent = await Student.create(payload);
+    res.status(201).json(newStudent);
   } catch (error) {
-    next(error); // Propagar (ValidationError, 11000)
+    next(error);
   }
 };
 
-const getAllStudents = async (req, res, next) => { // GET /api/students
+// GET /api/students
+// Lista paginada y filtrada por tenant.
+const getAllStudents = async (req, res, next) => {
   try {
-    const { // Parámetros de consulta
+    const {
       page = 1,
       limit = 20,
       status,
       group,
       search,
-      sort = "apellidos",
+      sort = "last_name",
       order = "asc",
     } = req.query;
 
-    const pageNum = Math.max(parseInt(page, 10) || 1, 1); // Mínimo 1
-    const limitNum = Math.min(Math.max(parseInt(limit, 10) || 20, 1), 100); // 1..100
+    const pageNum = Math.max(parseInt(page, 10) || 1, 1);
+    const limitNum = Math.min(Math.max(parseInt(limit, 10) || 20, 1), 100);
 
-    const filter = {}; // Filtro inicial vacío
-    if (status) filter.status = status; // Filtro por estado
-    if (group && mongoose.Types.ObjectId.isValid(group)) { // ID válido
-      filter.current_group_id = group; // Filtro por grupo
+    // Filtro base: tenant + opcionales
+    const filter = { ...tenantFilter(req) };
+    if (status) filter.status = status;
+    if (group && mongoose.Types.ObjectId.isValid(group)) {
+      filter.current_group_id = group;
     }
-    if (search) { // Búsqueda textual
-      const safe = String(search).trim(); // Limpiar
-      const regex = new RegExp( // Escapar y compilar
+    if (search) {
+      const safe = String(search).trim();
+      const regex = new RegExp(
         safe.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"),
         "i"
       );
-      filter.$or = [ // Sobre múltiples campos
-        { name: regex },
-        { apellidos: regex },
-        { matricula: regex },
-        { tarjeta_rfid: regex },
+      filter.$or = [
+        { first_name: regex },
+        { last_name: regex },
+        { enrollment_number: regex },
+        { rfid_card: regex },
       ];
     }
 
-    const sortOrder = order === "desc" ? -1 : 1; // Dirección de orden
-    const skip = (pageNum - 1) * limitNum; // Desplazamiento
+    const sortOrder = order === "desc" ? -1 : 1;
+    const skip = (pageNum - 1) * limitNum;
 
-    const [items, total] = await Promise.all([ // En paralelo
-      Student.find(filter) // Consultar
-        .populate("current_group_id", "grado grupo ciclo_escolar") // Unir grupo
-        .sort({ [sort]: sortOrder }) // Aplicar orden
-        .skip(skip) // Desplazar
-        .limit(limitNum), // Limitar
-      Student.countDocuments(filter), // Total de coincidencias
+    const [items, total] = await Promise.all([
+      Student.find(filter)
+        .populate("current_group_id", "grade section school_year head_teacher_id")
+        .sort({ [sort]: sortOrder })
+        .skip(skip)
+        .limit(limitNum),
+      Student.countDocuments(filter),
     ]);
 
-    res.status(200).json({ // Respuesta 200
-      items, // Filas de la página
-      total, // Total que coincide
-      page: pageNum, // Página actual
-      limit: limitNum, // Tamaño de página
-      pages: Math.ceil(total / limitNum) || 1, // Total de páginas
+    res.status(200).json({
+      items,
+      total,
+      page: pageNum,
+      limit: limitNum,
+      pages: Math.ceil(total / limitNum) || 1,
     });
   } catch (error) {
-    next(error); // Propagar
+    next(error);
   }
 };
 
-const getStudentById = async (req, res, next) => { // GET /api/students/:idStudent
+// GET /api/students/:studentId
+// findOne con filtro de tenant; nunca usa findById solo.
+const getStudentById = async (req, res, next) => {
   try {
-    const { idStudent } = req.params; // Parámetro
+    const { studentId } = req.params;
 
-    if (!mongoose.Types.ObjectId.isValid(idStudent)) { // ID inválido
-      return res.status(404).json({ message: `No student with id: ${idStudent}` });
+    if (!mongoose.Types.ObjectId.isValid(studentId)) {
+      return res.status(404).json({ message: `No student with id: ${studentId}` });
     }
 
-    const student = await Student.findById(idStudent).populate( // Buscar
-      "current_group_id",
-      "grado grupo ciclo_escolar tutor_maestro_id"
+    const student = await Student.findOne({
+      _id: studentId,
+      ...tenantFilter(req),
+    }).populate("current_group_id", "grade section school_year head_teacher_id");
+
+    if (!student) {
+      return res.status(404).json({ message: `No student with id: ${studentId}` });
+    }
+
+    res.status(200).json(student);
+  } catch (error) {
+    next(error);
+  }
+};
+
+// PUT /api/students/:studentId
+// findOneAndUpdate con filtro de tenant.
+const updateStudent = async (req, res, next) => {
+  try {
+    const { studentId } = req.params;
+
+    if (!mongoose.Types.ObjectId.isValid(studentId)) {
+      return res.status(404).json({ message: `No student with id: ${studentId}` });
+    }
+
+    // Evitar que un usuario regular cambie el school a otra escuela
+    if (req.payload.role !== "super_admin") {
+      delete req.body.school;
+    }
+
+    const updated = await Student.findOneAndUpdate(
+      { _id: studentId, ...tenantFilter(req) },
+      req.body,
+      { new: true, runValidators: true }
     );
 
-    if (!student) { // No encontrado
-      return res.status(404).json({ message: `No student with id: ${idStudent}` });
+    if (!updated) {
+      return res.status(404).json({ message: `No student with id: ${studentId}` });
     }
 
-    res.status(200).json(student); // 200 OK
+    res.status(200).json(updated);
   } catch (error) {
-    next(error); // Propagar
+    next(error);
   }
 };
 
-const updateStudent = async (req, res, next) => { // PUT /api/students/:idStudent
+// DELETE /api/students/:studentId
+// findOneAndDelete con filtro de tenant.
+const deleteStudent = async (req, res, next) => {
   try {
-    const { idStudent } = req.params; // Parámetro
+    const { studentId } = req.params;
 
-    if (!mongoose.Types.ObjectId.isValid(idStudent)) { // ID inválido
-      return res.status(404).json({ message: `No student with id: ${idStudent}` });
+    if (!mongoose.Types.ObjectId.isValid(studentId)) {
+      return res.status(404).json({ message: `No student with id: ${studentId}` });
     }
 
-    const updated = await Student.findByIdAndUpdate(idStudent, req.body, { // Actualizar
-      new: true, // Devolver documento actualizado
-      runValidators: true, // Re-ejecutar validadores del esquema
+    const deleted = await Student.findOneAndDelete({
+      _id: studentId,
+      ...tenantFilter(req),
     });
 
-    if (!updated) { // No encontrado
-      return res.status(404).json({ message: `No student with id: ${idStudent}` });
+    if (!deleted) {
+      return res.status(404).json({ message: `No student with id: ${studentId}` });
     }
 
-    res.status(200).json(updated); // 200 + documento
+    res.status(200).json({ message: "Student deleted successfully" });
   } catch (error) {
-    next(error); // Propagar
+    next(error);
   }
 };
 
-const deleteStudent = async (req, res, next) => { // DELETE /api/students/:idStudent
-  try {
-    const { idStudent } = req.params; // Parámetro
-
-    if (!mongoose.Types.ObjectId.isValid(idStudent)) { // ID inválido
-      return res.status(404).json({ message: `No student with id: ${idStudent}` });
-    }
-
-    const deleted = await Student.findByIdAndDelete(idStudent); // Eliminar
-
-    if (!deleted) { // No encontrado
-      return res.status(404).json({ message: `No student with id: ${idStudent}` });
-    }
-
-    res.status(200).json({ message: "Student deleted successfully" }); // 200 OK
-  } catch (error) {
-    next(error); // Propagar
-  }
-};
-
-module.exports = { // Exportar
+module.exports = {
   createStudent,
   getAllStudents,
   getStudentById,

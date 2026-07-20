@@ -1,38 +1,45 @@
-const app = require("./app"); // Instancia de Express
+// Punto de entrada del servidor.
+// Levanta el listener HTTP, registra los manejadores de señales
+// (SIGTERM, SIGINT, uncaughtException) y gestiona el cierre limpio.
+const app = require("./app"); // Instancia de Express ya configurada
 
-const PORT = process.env.PORT || 5000; // Puerto desde env o valor por defecto
+const PORT = process.env.PORT || 5005;
 
-const server = app.listen(PORT, () => { // Iniciar listener HTTP
-  console.log(`Server listening on http://localhost:${PORT}`); // Log de arranque
+const server = app.listen(PORT, () => {
+  console.log(`Server listening on http://localhost:${PORT}`);
 });
 
-const shutdown = (signal) => { // Manejador de cierre limpio
-  console.log(`\n${signal} received. Closing server gracefully...`); // Log de señal recibida
-  server.close(async () => { // Dejar de aceptar conexiones nuevas
+// Cierre limpio: dejar de aceptar conexiones, cerrar pool de Mongo, salir.
+const shutdown = (signal) => {
+  console.log(`\n${signal} received. Closing server gracefully...`);
+  server.close(async () => {
     try {
-      const mongoose = require("mongoose"); // Require perezoso
-      await mongoose.connection.close(); // Cerrar pool de Mongo
-      console.log("MongoDB connection closed."); // Confirmar cierre
-      process.exit(0); // Salida limpia
+      const mongoose = require("mongoose");
+      await mongoose.connection.close();
+      console.log("MongoDB connection closed.");
+      process.exit(0);
     } catch (err) {
-      console.error(`Error during shutdown: ${err.message}`); // Log de error
-      process.exit(1); // Salida con error
+      console.error(`Error during shutdown: ${err.message}`);
+      process.exit(1);
     }
   });
-  setTimeout(() => { // Timeout duro de respaldo
-    console.error("Forcing shutdown after timeout."); // Forzar cierre
-    process.exit(1); // Salida forzada
-  }, 10000).unref(); // 10 segundos, no mantiene el loop vivo
+  // Timeout duro de respaldo: si el cierre limpio tarda demasiado, forzar
+  setTimeout(() => {
+    console.error("Forcing shutdown after timeout.");
+    process.exit(1);
+  }, 10000).unref();
 };
 
-process.on("SIGTERM", () => shutdown("SIGTERM")); // Señal de terminación
-process.on("SIGINT", () => shutdown("SIGINT")); // Señal de Ctrl+C
+process.on("SIGTERM", () => shutdown("SIGTERM"));
+process.on("SIGINT", () => shutdown("SIGINT"));
 
-process.on("uncaughtException", (err) => { // Capturar excepciones síncronas
-  console.error("UNCAUGHT EXCEPTION:", err); // Registrar el error
-  shutdown("uncaughtException"); // Cerrar el servidor
+// Capturar excepciones síncronas no manejadas
+process.on("uncaughtException", (err) => {
+  console.error("UNCAUGHT EXCEPTION:", err);
+  shutdown("uncaughtException");
 });
 
-process.on("unhandledRejection", (reason) => { // Capturar rechazos de promesas
-  console.error("UNHANDLED REJECTION:", reason); // Registrar el rechazo
+// Capturar rechazos de promesas no manejados (solo se loggean, no se cierra)
+process.on("unhandledRejection", (reason) => {
+  console.error("UNHANDLED REJECTION:", reason);
 });
