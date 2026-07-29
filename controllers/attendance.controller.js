@@ -6,7 +6,9 @@
 const mongoose = require("mongoose");
 const Student = require("../models/Student.model");
 const AttendanceLog = require("../models/AttendanceLog.model");
+const Guardian = require("../models/Guardian.model");
 const notificationService = require("../services/notification.service");
+const cache = require("../services/cache.service");
 
 const tenantFilter = (req) =>
   req.payload.role === "super_admin" ? {} : { school: req.payload.schoolId };
@@ -71,6 +73,32 @@ const deviceTriggerController = async (req, res, next) => {
       event_type: eventType,
       device: deviceLabel,
     });
+
+    // Invalidar cache de los tutores afectados — para que el próximo GET del
+    // dashboard vea el nuevo evento al instante (sin esperar el TTL de 5 min).
+    // Busca todos los Guardian records que tienen a este student y borra
+    // su cache de dashboard y de student-grades.
+    try {
+      const affectedGuardians = await Guardian.find({ students: student._id })
+        .select("user_id")
+        .lean();
+      for (const g of affectedGuardians) {
+        await cache.invalidatePattern(`dashboard:${String(g.user_id)}:*`);
+        await cache.invalidatePattern(
+          `student-grades:${String(g.user_id)}:${String(student._id)}*`
+        );
+      }
+      if (affectedGuardians.length > 0) {
+        console.log(
+          `[attendance] Invalidated cache for ${affectedGuardians.length} guardian(s) of student ${student._id}`
+        );
+      }
+    } catch (cacheErr) {
+      // No crítico: el cache tiene TTL y se autorrecupera
+      console.warn(
+        `[attendance] Cache invalidation failed: ${cacheErr.message}`
+      );
+    }
 
     process.nextTick(() => {
       (async () => {

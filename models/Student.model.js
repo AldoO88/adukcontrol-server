@@ -1,37 +1,8 @@
 // Modelo de Estudiante
 // Representa a un alumno inscrito en la escuela. Almacena datos personales,
-// la tarjeta RFID, los tutores/padres como subdocumentos, y la referencia
-// al grupo actual. Cada estudiante pertenece a UNA escuela (tenant).
+// la tarjeta RFID, y la referencia a sus tutores/guardianes (modelo propio,
+// ver Guardian.model.js). Cada estudiante pertenece a UNA escuela (tenant).
 const { Schema, model } = require("mongoose");
-
-// Subdocumento Tutor/Guardián
-// Un estudiante puede tener uno o varios tutores. Cada tutor puede recibir
-// notificaciones push si tiene un token FCM registrado.
-const guardianSchema = new Schema(
-  {
-    name: {
-      type: String,
-      required: [true, "Guardian name is required."],
-      trim: true,
-    },
-    relationship: {
-      type: String,
-      required: [true, "Relationship is required."],
-      trim: true,
-    },
-    phone: {
-      type: String,
-      required: [true, "Guardian phone is required."],
-      trim: true,
-    },
-    fcm_token: {
-      type: String,
-      default: null,
-      trim: true,
-    },
-  },
-  { _id: false }
-);
 
 const studentSchema = new Schema(
   {
@@ -65,8 +36,18 @@ const studentSchema = new Schema(
       trim: true,
       uppercase: true,
     },
+    // URL pública de la foto del estudiante (almacenada en Cloudinary).
+    // Se actualiza vía POST /api/students/:studentId/photo.
+    photoUrl: {
+      type: String,
+      default: null,
+      trim: true,
+    },
+    // Referencias a los tutores/guardianes (ver Guardian.model.js).
+    // Reemplaza al subdoc embebido que existía antes.
     guardians: {
-      type: [guardianSchema],
+      type: [Schema.Types.ObjectId],
+      ref: "Guardian",
       default: [],
     },
     current_group_id: {
@@ -106,7 +87,8 @@ studentSchema.index(
 
 studentSchema.index({ current_group_id: 1 });
 studentSchema.index({ last_name: 1, first_name: 1 });
-studentSchema.index({ "guardians.fcm_token": 1 });
+studentSchema.index({ guardians: 1 });
+// Nota: el índice de fcm_token ahora vive en Guardian.model.js sobre guardian.fcm_token
 
 const Student = model("Student", studentSchema);
 

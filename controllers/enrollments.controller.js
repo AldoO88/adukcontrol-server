@@ -9,7 +9,7 @@ const tenantFilter = (req) =>
 // GET /api/enrollments
 const getAllEnrollments = async (req, res, next) => {
   try {
-    const { student_id, group_id, school_year, cycle_status } = req.query;
+    const { student_id, group_id, school_year_id, cycle_status } = req.query;
 
     const filter = { ...tenantFilter(req) };
     if (student_id && mongoose.Types.ObjectId.isValid(student_id)) {
@@ -18,12 +18,15 @@ const getAllEnrollments = async (req, res, next) => {
     if (group_id && mongoose.Types.ObjectId.isValid(group_id)) {
       filter.group_id = group_id;
     }
-    if (school_year) filter.school_year = school_year;
+    if (school_year_id && mongoose.Types.ObjectId.isValid(school_year_id)) {
+      filter.school_year_id = school_year_id;
+    }
     if (cycle_status) filter.cycle_status = cycle_status;
 
     const enrollments = await Enrollment.find(filter)
       .populate("student_id", "enrollment_number first_name last_name")
-      .populate("group_id", "grade section school_year")
+      .populate("group_id", "grade section school_year_id")
+      .populate("school_year_id", "name startDate endDate isActive")
       .sort({ createdAt: -1 });
 
     res.status(200).json(enrollments);
@@ -71,7 +74,8 @@ const getEnrollmentById = async (req, res, next) => {
       ...tenantFilter(req),
     })
       .populate("student_id", "enrollment_number first_name last_name")
-      .populate("group_id", "grade section school_year");
+      .populate("group_id", "grade section school_year_id")
+      .populate("school_year_id", "name startDate endDate isActive");
 
     if (!enrollment) {
       return res

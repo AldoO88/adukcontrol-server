@@ -8,6 +8,7 @@
 const path = require("path"); // Utilidades para manejar rutas de archivos
 const fs = require("fs"); // Sistema de archivos
 const admin = require("firebase-admin"); // SDK de Firebase Admin
+const Guardian = require("../models/Guardian.model"); // Modelo de tutores
 
 // Bandera: true después de inicializar Firebase correctamente
 let initialized = false;
@@ -125,32 +126,39 @@ const sendToTokens = async (tokens, payload) => {
 };
 
 // Notifica a los tutores de un estudiante sobre un evento de asistencia recién creado.
-// Devuelve { dispatched, failed, tokens } o { dispatched: 0, reason: "..." }.
+// Devuelve { dispatched, failed, tokens, invalidated } o { dispatched: 0, reason: "..." }.
 const sendAttendanceNotification = async (student, attendanceLog) => {
-  if (!student || !student.guardians || student.guardians.length === 0) {
+  // Buscar los tutores del estudiante en la colección Guardian
+  // (single source of truth tras la refactorización)
+  const guardians = await Guardian.find({
+    students: student._id,
+    school: student.school,
+  }).select("fcm_token phone name");
+
+  if (!guardians || guardians.length === 0) {
     return { dispatched: 0, reason: "no_guardians" };
   }
 
-  // Recolectar tokens FCM únicos y no vacíos
-  const tokens = [
-    ...new Set(
-      student.guardians
-        .map((g) => g.fcm_token)
-        .filter((t) => typeof t === "string" && t.trim().length > 0)
-    ),
-  ];
+  // Construir mapa token → guardian_id para poder invalidar tokens
+  // obsoletos cuando Firebase los rechace.
+  const tokenToGuardian = new Map();
+  for (const g of guardians) {
+    if (typeof g.fcm_token === "string" && g.fcm_token.trim().length > 0) {
+      tokenToGuardian.set(g.fcm_token, g._id);
+    }
+  }
 
+  const tokens = [...tokenToGuardian.keys()];
   if (tokens.length === 0) {
     return { dispatched: 0, reason: "no_tokens" };
   }
 
-  // Identificador legible de la escuela para los logs (school puede ser ObjectId o doc populado)
+  // Identificador legible de la escuela para los logs
   const schoolTag = student.school
     ? (student.school.cct ? student.school.cct : String(student.school._id || student.school))
     : "no-school";
 
   const fullName = `${student.first_name} ${student.last_name}`.trim();
-  // Etiqueta legible del tipo de evento, en mayúsculas
   const eventTypeLabel =
     attendanceLog.event_type === "entry" ? "ENTRY" : "EXIT";
   const time = new Date(attendanceLog.event_time).toLocaleTimeString("en-US", {
@@ -158,7 +166,6 @@ const sendAttendanceNotification = async (student, attendanceLog) => {
     minute: "2-digit",
   });
 
-  // Payload: títulos en inglés, el frontend los traduce antes de mostrar
   const payload = {
     title: `${eventTypeLabel}: ${fullName}`,
     body: `${fullName} marked ${eventTypeLabel.toLowerCase()} at ${time}.`,
@@ -172,16 +179,49 @@ const sendAttendanceNotification = async (student, attendanceLog) => {
     },
   };
 
-  // Loggear con la CCT/ID de la escuela para distinguir tenants en la consola
   console.log(
     `[attendance][school=${schoolTag}] Dispatching ${eventTypeLabel} for ${fullName} to ${tokens.length} token(s)`
   );
 
   const result = await sendToTokens(tokens, payload);
+
+  // Invalidar tokens rechazados por Firebase: si llegan con error de
+  // "no registrado" o "inválido", los marcamos como null en la DB para no
+  // seguir mandándoles push. La app móvil tendrá que re-registrar el token
+  // (o el usuario desinstaló la app).
+  const invalidTokenGuardianIds = [];
+  if (result.responses && Array.isArray(result.responses)) {
+    result.responses.forEach((resp, idx) => {
+      if (resp.success || !resp.error) return;
+      const code = resp.error.code || "";
+      const isStale =
+        code === "messaging/registration-token-not-registered" ||
+        code === "messaging/invalid-registration-token" ||
+        code === "messaging/invalid-argument";
+      if (!isStale) return;
+      const failedToken = tokens[idx];
+      const guardianId = tokenToGuardian.get(failedToken);
+      if (guardianId) invalidTokenGuardianIds.push(guardianId);
+    });
+  }
+
+  let invalidated = 0;
+  if (invalidTokenGuardianIds.length > 0) {
+    const upd = await Guardian.updateMany(
+      { _id: { $in: invalidTokenGuardianIds } },
+      { $set: { fcm_token: null } }
+    );
+    invalidated = upd.modifiedCount;
+    console.log(
+      `[attendance][school=${schoolTag}] Invalidated ${invalidated} stale fcm_token(s) (will require mobile app to re-register)`
+    );
+  }
+
   return {
     dispatched: result.successCount,
     failed: result.failureCount,
     tokens: tokens.length,
+    invalidated,
   };
 };
 

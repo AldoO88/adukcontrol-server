@@ -13,8 +13,9 @@ const schoolSchema = new Schema(
       required: [true, "School name is required."],
       trim: true,
     },
-    // URL pública del logotipo (opcional; null hasta que se suba)
-    logo: {
+    // URL pública del logotipo (opcional; null hasta que se suba).
+    // Se actualiza vía POST /api/schools/:schoolId/logo.
+    logoUrl: {
       type: String,
       default: null,
       trim: true,
@@ -33,9 +34,18 @@ const schoolSchema = new Schema(
       type: Boolean,
       default: true,
     },
+    // Ciclo escolar actual de la escuela (referencia a SchoolYear). Se
+    // sincroniza automáticamente vía POST /api/school-years/:id/activate.
+    // El dashboard y los listados usan este campo para saber "qué año corre
+    // ahora" sin tener que consultar SchoolYear por isActive.
+    current_school_year_id: {
+      type: Schema.Types.ObjectId,
+      ref: "SchoolYear",
+      default: null,
+    },
   },
   {
-    timestamps: true, // createdAt + updatedAt automáticos
+    timestamps: true,
     versionKey: false,
   }
 );

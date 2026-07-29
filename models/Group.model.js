@@ -26,15 +26,24 @@ const groupSchema = new Schema(
       trim: true,
       uppercase: true,
     },
-    school_year: {
-      type: String,
-      required: [true, "School year is required."],
-      trim: true,
-      match: [
-        /^\d{4}-\d{4}$/,
-        "School year must follow the pattern YYYY-YYYY.",
-      ],
+    school_year_id: {
+      type: Schema.Types.ObjectId,
+      ref: "SchoolYear",
+      required: [true, "School year reference is required."],
+      index: true,
     },
+    // Turno en el que se imparte el grupo: matutino, vespertino o nocturno.
+    // Usado por el dashboard del tutor para mostrar "2°B - Turno Matutino".
+    shift: {
+      type: String,
+      required: [true, "Shift is required."],
+      enum: {
+        values: ["matutino", "vespertino"],
+        message: "shift must be: matutino or vespertino ",
+      },
+      default: "matutino",
+    },
+    // Referencia al docente titular del grupo (opcional; null si no hay asignado)
     head_teacher_id: {
       type: Schema.Types.ObjectId,
       ref: "User",
@@ -49,7 +58,7 @@ const groupSchema = new Schema(
 
 // Único DENTRO de la escuela: mismo grado+sección+ciclo puede existir en otra escuela
 groupSchema.index(
-  { school: 1, grade: 1, section: 1, school_year: 1 },
+  { school: 1, grade: 1, section: 1, school_year_id: 1 },
   { unique: true, name: "uniq_school_grade_section_year" }
 );
 groupSchema.index({ head_teacher_id: 1 });

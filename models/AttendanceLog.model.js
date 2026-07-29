@@ -21,7 +21,7 @@ const attendanceLogSchema = new Schema(
     event_time: {
       type: Date,
       required: [true, "Event time is required."],
-      default: Date.now,
+      default: Date.now, //el formato de fecha que se guarda en la base de datos es: 2024-06-05T19:00:00.000Z
     },
     event_type: {
       type: String,

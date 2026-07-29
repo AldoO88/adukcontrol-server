@@ -40,6 +40,26 @@ module.exports = (app) => {
       }
     }
 
+    // MulterError: file too large, unexpected field, etc.
+    if (err && err.name === "MulterError") {
+      if (!res.headersSent) {
+        if (err.code === "LIMIT_FILE_SIZE") {
+          return res.status(413).json({
+            message: "Uploaded file is too large.",
+          });
+        }
+        if (err.code === "LIMIT_FILE_COUNT") {
+          return res.status(400).json({ message: "Too many files in request." });
+        }
+        if (err.code === "LIMIT_UNEXPECTED_FILE") {
+          return res
+            .status(400)
+            .json({ message: `Unexpected file field: ${err.field}.` });
+        }
+        return res.status(400).json({ message: err.message });
+      }
+    }
+
     // Render de respaldo: nunca enviar un 500 sin cuerpo
     if (!res.headersSent) {
       res.status(err.status || 500).json({

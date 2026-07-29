@@ -5,9 +5,9 @@ const rateLimit = require("express-rate-limit");
 const {
   signupController,
   loginController,
-  loginStaffController,
-  loginTutorController,
+  logoutController,
   requestActivationController,
+  verifyOtpController,
   activateAccountController,
   verifyController,
 } = require("../controllers/auth.controller");
@@ -18,8 +18,6 @@ const router = Router();
 
 // Rate limiter para el endpoint de solicitud de OTP.
 // Limita a 5 solicitudes por hora por IP para evitar SMS bombing.
-// En producción debería usarse un store distribuido (Redis) y limitar por
-// phoneNumber en lugar de IP.
 const otpRequestLimiter = rateLimit({
   windowMs: 60 * 60 * 1000, // 1 hora
   max: 5,
@@ -33,17 +31,17 @@ const otpRequestLimiter = rateLimit({
 // POST /auth/signup — crear usuario (staff o tutor pre-registrado)
 router.post("/signup", signupController);
 
-// POST /auth/login — login combinado (mantener para retro-compatibilidad)
+// POST /auth/login — login universal: phoneNumber + password (todos los roles)
 router.post("/login", loginController);
 
-// POST /auth/login-staff — staff: email + password
-router.post("/login-staff", loginStaffController);
-
-// POST /auth/login-tutor — tutor activado: phoneNumber + password
-router.post("/login-tutor", loginTutorController);
+// POST /auth/logout — limpia la cookie HttpOnly
+router.post("/logout", logoutController);
 
 // POST /auth/request-activation — tutor pide OTP por SMS (rate-limited)
 router.post("/request-activation", otpRequestLimiter, requestActivationController);
+
+// POST /auth/verify-otp — valida OTP sin activar la cuenta
+router.post("/verify-otp", verifyOtpController);
 
 // POST /auth/activate-account — tutor verifica OTP y establece password
 router.post("/activate-account", activateAccountController);

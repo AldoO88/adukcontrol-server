@@ -8,9 +8,17 @@ const {
   getStudentById,
   updateStudent,
   deleteStudent,
+  uploadStudentPhoto,
+  getStudentPhotoVersions,
+  rollbackStudentPhoto,
+  promoteStudent,
+  getStudentEnrollments,
+  getStudentAcademicHistory,
+  promoteStudentsBulk,
 } = require("../controllers/students.controller");
 const { isAuthenticated } = require("../middleware/jwt.middleware");
 const { authorize } = require("../middleware/authorize.middleware");
+const { uploadSingle } = require("../middleware/upload.middleware");
 
 const { Router } = express;
 const router = Router();
@@ -50,6 +58,46 @@ router.delete(
   "/:studentId",
   authorize("admin", "registrar"),
   deleteStudent
+);
+
+// Rutas con path explícito "photo/...", "promote", "enrollments" — DEBEN
+// ir antes que /:studentId (Express matchearía esos segmentos como un ObjectId).
+router.post(
+  "/:studentId/photo",
+  authorize("admin", "registrar", "super_admin"),
+  uploadSingle("photo"),
+  uploadStudentPhoto
+);
+router.get("/:studentId/photo/versions", getStudentPhotoVersions);
+router.post("/:studentId/photo/rollback", rollbackStudentPhoto);
+
+// POST /api/students/:studentId/promote — promover al siguiente ciclo escolar
+router.post(
+  "/:studentId/promote",
+  authorize("admin", "registrar", "super_admin"),
+  promoteStudent
+);
+
+// GET /api/students/:studentId/enrollments — historial académico
+router.get(
+  "/:studentId/enrollments",
+  authorize("admin", "principal", "registrar", "teacher", "prefect", "social_worker"),
+  getStudentEnrollments
+);
+
+// GET /api/students/:studentId/academic-history — vista consolidada
+router.get(
+  "/:studentId/academic-history",
+  authorize("admin", "principal", "registrar", "teacher", "prefect", "social_worker"),
+  getStudentAcademicHistory
+);
+
+// POST /api/students/promote-bulk — DEBE ir antes que /:studentId
+// (Express matchearía "promote-bulk" como un ObjectId si no)
+router.post(
+  "/promote-bulk",
+  authorize("admin", "registrar", "super_admin"),
+  promoteStudentsBulk
 );
 
 module.exports = router;

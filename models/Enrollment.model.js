@@ -22,14 +22,11 @@ const enrollmentSchema = new Schema(
       ref: "Group",
       required: [true, "Group reference is required."],
     },
-    school_year: {
-      type: String,
-      required: [true, "School year is required."],
-      trim: true,
-      match: [
-        /^\d{4}-\d{4}$/,
-        "School year must follow the pattern YYYY-YYYY.",
-      ],
+    school_year_id: {
+      type: Schema.Types.ObjectId,
+      ref: "SchoolYear",
+      required: [true, "School year reference is required."],
+      index: true,
     },
     cycle_status: {
       type: String,
@@ -49,10 +46,10 @@ const enrollmentSchema = new Schema(
 
 // Único DENTRO de la escuela: un estudiante solo tiene una inscripción por ciclo en su escuela
 enrollmentSchema.index(
-  { school: 1, student_id: 1, school_year: 1 },
+  { school: 1, student_id: 1, school_year_id: 1 },
   { unique: true, name: "uniq_school_student_school_year" }
 );
-enrollmentSchema.index({ group_id: 1, school_year: 1 });
+enrollmentSchema.index({ group_id: 1, school_year_id: 1 });
 enrollmentSchema.index({ student_id: 1, cycle_status: 1 });
 
 const Enrollment = model("Enrollment", enrollmentSchema);

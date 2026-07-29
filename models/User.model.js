@@ -20,18 +20,27 @@ const userSchema = new Schema(
       index: true,
       default: null,
     },
-    // Nombre a mostrar del usuario
+    // Nombre a mostrar del usuario (primer nombre o nombre de pila)
     name: {
       type: String,
       required: [true, "Name is required."],
       trim: true,
     },
-    // Email del staff; opcional para tutor (que usa phoneNumber)
-    email: {
+    // Apellido del usuario. Requerido salvo para super_admin (bootstrap
+    // inicial del sistema). Usado por el dashboard del tutor para construir
+    // el saludo "Hola, <name> <last_name>".
+    last_name: {
       type: String,
       required: function () {
-        return this.role !== "tutor";
+        return this.role !== "super_admin";
       },
+      default: null,
+      trim: true,
+    },
+    // Email del usuario (opcional). El login es por phoneNumber, pero el email
+    // puede servir para notificaciones, recuperación u otros flujos futuros.
+    email: {
+      type: String,
       lowercase: true,
       trim: true,
       match: [
@@ -40,21 +49,18 @@ const userSchema = new Schema(
       ],
     },
     // Número de celular a 10 dígitos (formato MX, sin código de país).
-    // Requerido solo para tutor; usado como identificador de login y para OTP.
+    // Identificador universal de login y de contacto para OTP.
+    // Requerido para TODOS los roles.
     phoneNumber: {
       type: String,
-      required: function () {
-        return this.role === "tutor";
-      },
+      required: [true, "Phone number is required."],
       match: [/^\d{10}$/, "Phone number must be 10 digits."],
       trim: true,
     },
     // Contraseña hasheada con bcrypt. Para tutor es null hasta que active la cuenta.
     password: {
       type: String,
-      required: function () {
-        return this.role !== "tutor";
-      },
+      required: false,
       minlength: [8, "Password must be at least 8 characters long."],
       select: false,
     },
@@ -81,7 +87,7 @@ const userSchema = new Schema(
     isActive: {
       type: Boolean,
       default: function () {
-        return this.role !== "tutor";
+        return this.role === "super_admin";
       },
     },
     // OTP temporal (hasheado con bcrypt). Solo presente durante el flujo de activación.
@@ -96,16 +102,6 @@ const userSchema = new Schema(
       type: Date,
       select: false,
       default: null,
-    },
-    // Lista explícita de estudiantes de los que este tutor es guardián.
-    // Se llena en el signup (la escuela pre-registra al tutor con sus hijos)
-    // o después vía PUT /api/tutors/:userId/students.
-    // Es un link explícito; el matching implícito sigue siendo por
-    // Student.guardians.phone === User.phoneNumber.
-    tutor_of_students: {
-      type: [Schema.Types.ObjectId],
-      ref: "Student",
-      default: [],
     },
   },
   {

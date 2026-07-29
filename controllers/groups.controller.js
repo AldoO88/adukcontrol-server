@@ -2,16 +2,34 @@
 // Operaciones CRUD sobre el recurso Group, con aislamiento multi-tenant.
 const mongoose = require("mongoose");
 const Group = require("../models/Group.model");
+const Enrollment = require("../models/Enrollment.model");
 
 const tenantFilter = (req) =>
   req.payload.role === "super_admin" ? {} : { school: req.payload.schoolId };
 
 // GET /api/groups
+// Query params opcionales:
+//   - school_year_id: filtra por ciclo específico (ObjectId de SchoolYear)
+//   - grade: filtra por grado (1, 2, 3)
+//   - section: filtra por sección (case-insensitive)
 const getAllGroups = async (req, res, next) => {
   try {
-    const groups = await Group.find(tenantFilter(req))
+    const filter = { ...tenantFilter(req) };
+    if (req.query.school_year_id && mongoose.Types.ObjectId.isValid(req.query.school_year_id)) {
+      filter.school_year_id = req.query.school_year_id;
+    }
+    if (req.query.grade) {
+      const g = parseInt(req.query.grade, 10);
+      if (!Number.isNaN(g)) filter.grade = g;
+    }
+    if (req.query.section) {
+      filter.section = String(req.query.section).toUpperCase();
+    }
+
+    const groups = await Group.find(filter)
       .populate("head_teacher_id", "first_name last_name email role")
-      .sort({ grade: 1, section: 1, school_year: 1 });
+      .populate("school_year_id", "name startDate endDate isActive")
+      .sort({ grade: 1, section: 1 });
     res.status(200).json(groups);
   } catch (error) {
     next(error);
@@ -53,7 +71,9 @@ const getGroupById = async (req, res, next) => {
     const group = await Group.findOne({
       _id: groupId,
       ...tenantFilter(req),
-    }).populate("head_teacher_id", "first_name last_name email role");
+    })
+      .populate("head_teacher_id", "first_name last_name email role")
+      .populate("school_year_id", "name startDate endDate isActive");
 
     if (!group) {
       return res.status(404).json({ message: `No group with id: ${groupId}` });
@@ -118,10 +138,58 @@ const deleteGroup = async (req, res, next) => {
   }
 };
 
+// GET /api/groups/:groupId/students
+// Devuelve TODOS los estudiantes que estuvieron (o están) en este grupo,
+// a lo largo de todos los ciclos escolares. Usa la junction table Enrollment
+// para resolver la lista histórica, e incluye el status de cada uno
+// (enrolled/graduated/withdrawn/transferred).
+//
+// Útil para: "¿Quiénes estaban en 1°A en 2023-2024?" o "¿Cuántos alumnos
+// pasaron por este grupo en total?"
+const getGroupStudents = async (req, res, next) => {
+  try {
+    const { groupId } = req.params;
+
+    if (!mongoose.Types.ObjectId.isValid(groupId)) {
+      return res.status(404).json({ message: `No group with id: ${groupId}` });
+    }
+
+    // Verificar que el grupo existe y pertenece al tenant
+    const group = await Group.findOne({
+      _id: groupId,
+      ...tenantFilter(req),
+    });
+    if (!group) {
+      return res.status(404).json({ message: `No group with id: ${groupId}` });
+    }
+
+    // Buscar todas las Enrollments de este grupo
+    const enrollments = await Enrollment.find({ group_id: groupId })
+      .populate("student_id", "enrollment_number first_name last_name status photoUrl current_group_id")
+      .populate("school_year_id", "name startDate endDate isActive")
+      .sort({ createdAt: -1 });
+
+    res.status(200).json({
+      group: {
+        _id: group._id,
+        grade: group.grade,
+        section: group.section,
+        school_year_id: group.school_year_id,
+        shift: group.shift,
+      },
+      items: enrollments,
+      total: enrollments.length,
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
 module.exports = {
   getAllGroups,
   createGroup,
   getGroupById,
   updateGroup,
   deleteGroup,
+  getGroupStudents,
 };
