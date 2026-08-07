@@ -51,4 +51,79 @@ const verifyDeviceApiKey = (req, res, next) => {
   return next();
 };
 
-module.exports = { verifyDeviceApiKey };
+// === Middleware de autenticación ADMS (terminales ZKTeco) ==============
+// El firmware de las terminales NO permite añadir cabeceras personalizadas:
+// solo se le configura IP, puerto y ruta. Por eso `verifyDeviceApiKey` no
+// sirve aquí y la identificación se hace por número de serie (SN), que el
+// equipo manda en el query string de todas sus peticiones.
+//
+// Variables de entorno:
+//   ADMS_ALLOWED_SERIALS   — lista separada por comas de números de serie
+//                            autorizados. Si NO se define, se acepta
+//                            cualquier SN (útil solo en desarrollo; en
+//                            producción DEBE definirse).
+//   ADMS_DEVICE_SCHOOL_MAP — JSON { "<SN>": "<schoolId>" }. Cuando existe la
+//                            entrada, acota la búsqueda del alumno a esa
+//                            escuela y elimina la ambigüedad cross-tenant
+//                            (los PIN son únicos por escuela, no globalmente).
+//
+// El SN NO es un secreto: va en claro en el query string. Este middleware es
+// una lista blanca, no autenticación fuerte — expón /iclock solo por HTTPS y,
+// si se puede, restringido por IP a la red de la escuela.
+const parseCsvEnv = (value) =>
+  String(value || "")
+    .split(",")
+    .map((s) => s.trim())
+    .filter((s) => s.length > 0);
+
+let cachedSchoolMap = null;
+const getDeviceSchoolMap = () => {
+  if (cachedSchoolMap !== null) return cachedSchoolMap;
+
+  const raw = process.env.ADMS_DEVICE_SCHOOL_MAP;
+  if (!raw) {
+    cachedSchoolMap = {};
+    return cachedSchoolMap;
+  }
+
+  try {
+    const parsed = JSON.parse(raw);
+    cachedSchoolMap = parsed && typeof parsed === "object" ? parsed : {};
+  } catch (e) {
+    console.error(
+      `[adms] ADMS_DEVICE_SCHOOL_MAP is not valid JSON — ignoring it: ${e.message}`
+    );
+    cachedSchoolMap = {};
+  }
+
+  return cachedSchoolMap;
+};
+
+const verifyAdmsDevice = (req, res, next) => {
+  const serial = String(req.query.SN || req.query.sn || "").trim();
+
+  if (!serial) {
+    // Texto plano: el firmware no interpreta JSON.
+    return res.type("text/plain").status(401).send("Missing SN");
+  }
+
+  const allowed = parseCsvEnv(process.env.ADMS_ALLOWED_SERIALS);
+  if (allowed.length > 0 && !allowed.includes(serial)) {
+    console.warn(`[adms] Rejected push from unknown serial SN=${serial}`);
+    return res.type("text/plain").status(401).send("Unauthorized SN");
+  }
+  if (allowed.length === 0) {
+    console.warn(
+      `[adms] ADMS_ALLOWED_SERIALS is not set — accepting SN=${serial} without allowlist.`
+    );
+  }
+
+  req.deviceSerial = serial;
+  // Puede quedar undefined: el controlador entonces busca cross-tenant y
+  // descarta el registro si hay más de una coincidencia.
+  req.deviceSchoolId = getDeviceSchoolMap()[serial];
+
+  return next();
+};
+
+module.exports = { verifyDeviceApiKey, verifyAdmsDevice };

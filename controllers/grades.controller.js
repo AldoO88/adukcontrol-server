@@ -6,6 +6,8 @@ const mongoose = require("mongoose");
 const Grade = require("../models/Grade.model");
 const Enrollment = require("../models/Enrollment.model");
 const TeacherSubject = require("../models/TeacherSubject.model");
+const GradingPeriod = require("../models/GradingPeriod.model");
+const Subject = require("../models/Subject.model");
 const {
   invalidateStudentDashboardCache,
 } = require("../services/dashboard-cache.service");
@@ -17,13 +19,13 @@ const tenantFilter = (req) =>
     : { school: req.payload.schoolId };
 
 // POST /api/students/:studentId/grades
-// Crea una nota. Requiere enrollment_id en el body (que valida pertenencia).
+// Crea una nota. Requiere enrollment_id y subject_id en el body.
 // Auth: teacher (maestro), admin, registrar, super_admin
-// Si es teacher, se valida que tenga un TeacherSubject para (subject, group, year).
+// Si es teacher, se valida que tenga un TeacherSubject para (subject_id, group, year).
 const createGrade = async (req, res, next) => {
   try {
     const { studentId } = req.params;
-    const { enrollment_id, subject, period, value, comments } = req.body;
+    const { enrollment_id, subject_id, gradingPeriod, value, comments } = req.body;
 
     if (!mongoose.Types.ObjectId.isValid(studentId)) {
       return res.status(404).json({ message: `No student with id: ${studentId}` });
@@ -31,8 +33,11 @@ const createGrade = async (req, res, next) => {
     if (!enrollment_id || !mongoose.Types.ObjectId.isValid(enrollment_id)) {
       return res.status(400).json({ message: "Valid enrollment_id is required." });
     }
-    if (!subject || typeof subject !== "string" || !subject.trim()) {
-      return res.status(400).json({ message: "subject is required." });
+    if (!subject_id || !mongoose.Types.ObjectId.isValid(subject_id)) {
+      return res.status(400).json({ message: "Valid subject_id is required." });
+    }
+    if (!gradingPeriod || !mongoose.Types.ObjectId.isValid(gradingPeriod)) {
+      return res.status(400).json({ message: "Valid gradingPeriod is required." });
     }
     if (value === undefined || value === null || typeof value !== "number") {
       return res.status(400).json({ message: "value (number 0-10) is required." });
@@ -41,12 +46,6 @@ const createGrade = async (req, res, next) => {
       return res
         .status(400)
         .json({ message: "value must be between 0 and 10." });
-    }
-    const finalPeriod = period !== undefined ? period : 1;
-    if (![0, 1, 2, 3].includes(finalPeriod)) {
-      return res
-        .status(400)
-        .json({ message: "period must be 0, 1, 2 or 3." });
     }
 
     // Verificar que la Enrollment existe, pertenece al tenant, y al student
@@ -66,28 +65,49 @@ const createGrade = async (req, res, next) => {
       });
     }
 
+    // Verificar que la materia existe en la escuela
+    const subject = await Subject.findOne({
+      _id: subject_id,
+      ...tenantFilter(req),
+    });
+    if (!subject) {
+      return res.status(404).json({ message: "Subject not found in this tenant." });
+    }
+
+    // Verificar que el GradingPeriod existe y pertenece al ciclo de la Enrollment
+    const period = await GradingPeriod.findOne({
+      _id: gradingPeriod,
+      school: enrollment.school,
+      school_year_id: enrollment.school_year_id._id,
+    });
+    if (!period) {
+      return res.status(404).json({
+        message: "GradingPeriod not found for this school year.",
+      });
+    }
+
     // Si el usuario es teacher, validar que tenga TeacherSubject para
     // esta (subject, group, school_year). Admin/registrar/super_admin bypassean.
     if (req.payload.role === "teacher") {
       const assignment = await TeacherSubject.findOne({
         teacher_id: req.payload._id,
-        subject: subject.trim(),
+        subject_id,
         group_id: enrollment.group_id,
         school_year_id: enrollment.school_year_id._id,
       });
       if (!assignment) {
         return res.status(403).json({
-          message: `You are not assigned to teach "${subject}" to this group in ${enrollment.school_year_id.name}.`,
+          message: `You are not assigned to teach "${subject.name}" to this group in ${enrollment.school_year_id.name}.`,
         });
       }
     }
 
     // Crear o actualizar (idempotente: si ya existe nota para esta
-    // enrollment+subject+period, actualizamos el value)
+    // enrollment+subject+gradingPeriod, actualizamos el value)
     const filter = {
       enrollment_id,
-      subject: subject.trim(),
-      period: finalPeriod,
+      subject_id,
+      gradingPeriod,
     };
     const update = {
       $set: {
@@ -95,6 +115,9 @@ const createGrade = async (req, res, next) => {
         comments: comments || null,
         school: enrollment.school,
         school_year_id: enrollment.school_year_id._id,
+        subject_id,
+        gradingPeriod,
+        period_order: period.order,
         graded_by: req.payload._id,
         graded_at: new Date(),
       },
@@ -113,12 +136,12 @@ const createGrade = async (req, res, next) => {
 };
 
 // GET /api/students/:studentId/grades
-// Lista las notas del student. Filtros opcionales: school_year_id, subject, period.
+// Lista las notas del student. Filtros opcionales: school_year_id, subject_id, gradingPeriod.
 // Auth: staff (admin, registrar, teacher, etc.) o tutor dueño.
 const getStudentGrades = async (req, res, next) => {
   try {
     const { studentId } = req.params;
-    const { school_year_id, subject, period } = req.query;
+    const { school_year_id, subject_id, gradingPeriod } = req.query;
 
     if (!mongoose.Types.ObjectId.isValid(studentId)) {
       return res.status(404).json({ message: `No student with id: ${studentId}` });
@@ -138,14 +161,20 @@ const getStudentGrades = async (req, res, next) => {
     if (school_year_id && mongoose.Types.ObjectId.isValid(school_year_id)) {
       gradeFilter.school_year_id = school_year_id;
     }
-    if (subject) gradeFilter.subject = subject;
-    if (period !== undefined) gradeFilter.period = parseInt(period, 10);
+    if (subject_id && mongoose.Types.ObjectId.isValid(subject_id)) {
+      gradeFilter.subject_id = subject_id;
+    }
+    if (gradingPeriod && mongoose.Types.ObjectId.isValid(gradingPeriod)) {
+      gradeFilter.gradingPeriod = gradingPeriod;
+    }
 
     const grades = await Grade.find(gradeFilter)
       .populate("enrollment_id", "group_id cycle_status")
       .populate("school_year_id", "name startDate endDate isActive")
+      .populate("subject_id", "code name")
+      .populate("gradingPeriod", "name order")
       .populate("graded_by", "name email role")
-      .sort({ subject: 1, period: 1 });
+      .sort({ subject_id: 1, period_order: 1 });
 
     // Orden final: ciclo más reciente primero (por startDate real, no por string)
     grades.sort((a, b) => {
@@ -167,11 +196,11 @@ const getStudentGrades = async (req, res, next) => {
 //
 // Query params:
 //   - school_year_id: ciclo específico (default: el más reciente del student, por startDate)
-//   - period: 0/1/2/3 — filtra por trimestre; sin period devuelve todos
+//   - gradingPeriod: ObjectId del período específico
 const getStudentGradesSummary = async (req, res, next) => {
   try {
     const { studentId } = req.params;
-    const { school_year_id, period } = req.query;
+    const { school_year_id, gradingPeriod } = req.query;
 
     if (!mongoose.Types.ObjectId.isValid(studentId)) {
       return res.status(404).json({ message: `No student with id: ${studentId}` });
@@ -201,7 +230,9 @@ const getStudentGradesSummary = async (req, res, next) => {
     const allGrades =
       allEnrollmentIds.length === 0
         ? []
-        : await Grade.find({ enrollment_id: { $in: allEnrollmentIds } });
+        : await Grade.find({ enrollment_id: { $in: allEnrollmentIds } })
+            .populate("subject_id", "code name")
+            .populate("gradingPeriod", "name order");
 
     // Map enrollment_id → SchoolYear (populado)
     const enrollmentYear = new Map();
@@ -224,16 +255,18 @@ const getStudentGradesSummary = async (req, res, next) => {
         const sum = grades.reduce((s, g) => s + g.value, 0);
         const avg = grades.length > 0 ? sum / grades.length : null;
 
-        // by_period dentro de este año
+        // by_period dentro de este año (usar period_order)
         const periodMap = {};
         for (const g of grades) {
-          if (!periodMap[g.period]) periodMap[g.period] = { sum: 0, count: 0 };
-          periodMap[g.period].sum += g.value;
-          periodMap[g.period].count += 1;
+          const pKey = g.period_order;
+          if (!periodMap[pKey]) periodMap[pKey] = { sum: 0, count: 0, name: g.gradingPeriod?.name || `Periodo ${pKey}` };
+          periodMap[pKey].sum += g.value;
+          periodMap[pKey].count += 1;
         }
         const byPeriodInYear = Object.entries(periodMap)
-          .map(([p, { sum, count }]) => ({
+          .map(([p, { sum, count, name }]) => ({
             period: parseInt(p, 10),
+            name,
             average: Math.round((sum / count) * 100) / 100,
             count,
           }))
@@ -262,7 +295,7 @@ const getStudentGradesSummary = async (req, res, next) => {
     const emptySummary = (schoolYear) => ({
       school_year_id: schoolYear ? schoolYear._id : school_year_id || null,
       school_year: schoolYear ? schoolYear.name : null,
-      period: period !== undefined ? parseInt(period, 10) : null,
+      gradingPeriod: gradingPeriod || null,
       total_grades: 0,
       average: null,
       by_subject: [],
@@ -306,39 +339,48 @@ const getStudentGradesSummary = async (req, res, next) => {
     }
 
     const gradeFilter = { enrollment_id: { $in: targetEnrollmentIds } };
-    if (period !== undefined) gradeFilter.period = parseInt(period, 10);
+    if (gradingPeriod && mongoose.Types.ObjectId.isValid(gradingPeriod)) {
+      gradeFilter.gradingPeriod = gradingPeriod;
+    }
 
-    const grades = await Grade.find(gradeFilter);
+    const grades = await Grade.find(gradeFilter)
+      .populate("subject_id", "code name")
+      .populate("gradingPeriod", "name order");
 
     if (grades.length === 0) {
       return res.status(200).json(emptySummary(targetSchoolYear));
     }
 
-    // Por materia
+    // Por materia (usar subject_id poblado)
     const bySubjectMap = {};
     for (const g of grades) {
-      if (!bySubjectMap[g.subject]) bySubjectMap[g.subject] = { sum: 0, count: 0 };
-      bySubjectMap[g.subject].sum += g.value;
-      bySubjectMap[g.subject].count += 1;
+      const subjectKey = String(g.subject_id?._id || g.subject_id);
+      const subjectName = g.subject_id?.name || subjectKey;
+      if (!bySubjectMap[subjectKey]) bySubjectMap[subjectKey] = { name: subjectName, sum: 0, count: 0 };
+      bySubjectMap[subjectKey].sum += g.value;
+      bySubjectMap[subjectKey].count += 1;
     }
     const bySubject = Object.entries(bySubjectMap)
-      .map(([subject, { sum, count }]) => ({
-        subject,
+      .map(([id, { name, sum, count }]) => ({
+        subject_id: id,
+        subject: name,
         average: sum / count,
         count,
       }))
       .sort((a, b) => b.average - a.average);
 
-    // Por período
+    // Por período (usar period_order)
     const byPeriodMap = {};
     for (const g of grades) {
-      if (!byPeriodMap[g.period]) byPeriodMap[g.period] = { sum: 0, count: 0 };
-      byPeriodMap[g.period].sum += g.value;
-      byPeriodMap[g.period].count += 1;
+      const pKey = g.period_order;
+      if (!byPeriodMap[pKey]) byPeriodMap[pKey] = { sum: 0, count: 0, name: g.gradingPeriod?.name || `Periodo ${pKey}` };
+      byPeriodMap[pKey].sum += g.value;
+      byPeriodMap[pKey].count += 1;
     }
     const byPeriod = Object.entries(byPeriodMap)
-      .map(([p, { sum, count }]) => ({
+      .map(([p, { sum, count, name }]) => ({
         period: parseInt(p, 10),
+        name,
         average: sum / count,
         count,
       }))
@@ -356,7 +398,7 @@ const getStudentGradesSummary = async (req, res, next) => {
     res.status(200).json({
       school_year_id: targetSchoolYear._id,
       school_year: targetSchoolYear.name,
-      period: period !== undefined ? parseInt(period, 10) : null,
+      gradingPeriod: gradingPeriod || null,
       total_grades: grades.length,
       average: Math.round(avgOf(grades) * 100) / 100,
       by_subject: bySubject.map((s) => ({
@@ -368,14 +410,18 @@ const getStudentGradesSummary = async (req, res, next) => {
         average: Math.round(p.average * 100) / 100,
       })),
       highest: {
-        subject: highest.subject,
+        subject_id: highest.subject_id?._id || highest.subject_id,
+        subject: highest.subject_id?.name || null,
         value: highest.value,
-        period: highest.period,
+        period: highest.period_order,
+        period_name: highest.gradingPeriod?.name || null,
       },
       lowest: {
-        subject: lowest.subject,
+        subject_id: lowest.subject_id?._id || lowest.subject_id,
+        subject: lowest.subject_id?.name || null,
         value: lowest.value,
-        period: lowest.period,
+        period: lowest.period_order,
+        period_name: lowest.gradingPeriod?.name || null,
       },
       by_year: byYear,
       final_grade: finalGrade,
@@ -390,7 +436,7 @@ const getStudentGradesSummary = async (req, res, next) => {
 const updateGrade = async (req, res, next) => {
   try {
     const { gradeId } = req.params;
-    const { value, comments, period, subject } = req.body;
+    const { value, comments, gradingPeriod, subject_id } = req.body;
 
     if (!mongoose.Types.ObjectId.isValid(gradeId)) {
       return res.status(404).json({ message: `No grade with id: ${gradeId}` });
@@ -399,6 +445,12 @@ const updateGrade = async (req, res, next) => {
       return res
         .status(400)
         .json({ message: "value must be a number between 0 and 10." });
+    }
+    if (subject_id !== undefined && !mongoose.Types.ObjectId.isValid(subject_id)) {
+      return res.status(400).json({ message: "Invalid subject_id." });
+    }
+    if (gradingPeriod !== undefined && !mongoose.Types.ObjectId.isValid(gradingPeriod)) {
+      return res.status(400).json({ message: "Invalid gradingPeriod." });
     }
 
     const grade = await Grade.findOne({
@@ -418,8 +470,15 @@ const updateGrade = async (req, res, next) => {
 
     if (value !== undefined) grade.value = value;
     if (comments !== undefined) grade.comments = comments;
-    if (period !== undefined) grade.period = period;
-    if (subject !== undefined) grade.subject = subject;
+    if (subject_id !== undefined) grade.subject_id = subject_id;
+    if (gradingPeriod !== undefined) {
+      // Resolver el period_order desde el GradingPeriod
+      const period = await GradingPeriod.findById(gradingPeriod);
+      if (period) {
+        grade.gradingPeriod = gradingPeriod;
+        grade.period_order = period.order;
+      }
+    }
     grade.graded_by = req.payload._id;
     grade.graded_at = new Date();
     await grade.save();

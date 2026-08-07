@@ -1,6 +1,7 @@
 // Servicio de Notificaciones Push (Firebase Cloud Messaging)
 // Encapsula el SDK de Firebase Admin para enviar notificaciones push
-// a los dispositivos de los tutores cuando se registra un evento de asistencia.
+// a los dispositivos de los tutores cuando se registra un evento de
+// asistencia, se publica un aviso, o se agenda un citatorio.
 //
 // Es seguro llamar a las funciones de este módulo aunque Firebase no esté
 // configurado: las funciones simplemente devolverán null o un resultado vacío
@@ -9,6 +10,7 @@ const path = require("path"); // Utilidades para manejar rutas de archivos
 const fs = require("fs"); // Sistema de archivos
 const admin = require("firebase-admin"); // SDK de Firebase Admin
 const Guardian = require("../models/Guardian.model"); // Modelo de tutores
+const Student = require("../models/Student.model"); // Modelo de estudiantes
 
 // Bandera: true después de inicializar Firebase correctamente
 let initialized = false;
@@ -173,7 +175,7 @@ const sendAttendanceNotification = async (student, attendanceLog) => {
     data: {
       event_type: attendanceLog.event_type,
       student_id: String(student._id),
-      enrollment_number: student.enrollment_number,
+      controlNumber: student.controlNumber,
       event_time: String(attendanceLog.event_time),
       log_id: String(attendanceLog._id),
     },
@@ -225,9 +227,204 @@ const sendAttendanceNotification = async (student, attendanceLog) => {
   };
 };
 
+// Helper compartido: arma el tokenToGuardian map, despacha y limpia
+// tokens stale. Lo usan las 3 funciones de notificación (attendance,
+// citation, announcement) para no duplicar el patrón de invalidación.
+const dispatchToGuardians = async (guardians, payload, logTag) => {
+  if (!guardians || guardians.length === 0) {
+    return { dispatched: 0, reason: "no_guardians" };
+  }
+  const tokenToGuardian = new Map();
+  for (const g of guardians) {
+    if (typeof g.fcm_token === "string" && g.fcm_token.trim().length > 0) {
+      tokenToGuardian.set(g.fcm_token, g._id);
+    }
+  }
+  const tokens = [...tokenToGuardian.keys()];
+  if (tokens.length === 0) {
+    return { dispatched: 0, reason: "no_tokens" };
+  }
+
+  const result = await sendToTokens(tokens, payload);
+
+  // Invalidar tokens stale (registration-token-not-registered, etc.)
+  const invalidTokenGuardianIds = [];
+  if (result.responses && Array.isArray(result.responses)) {
+    result.responses.forEach((resp, idx) => {
+      if (resp.success || !resp.error) return;
+      const code = resp.error.code || "";
+      const isStale =
+        code === "messaging/registration-token-not-registered" ||
+        code === "messaging/invalid-registration-token" ||
+        code === "messaging/invalid-argument";
+      if (!isStale) return;
+      const failedToken = tokens[idx];
+      const guardianId = tokenToGuardian.get(failedToken);
+      if (guardianId) invalidTokenGuardianIds.push(guardianId);
+    });
+  }
+
+  let invalidated = 0;
+  if (invalidTokenGuardianIds.length > 0) {
+    const upd = await Guardian.updateMany(
+      { _id: { $in: invalidTokenGuardianIds } },
+      { $set: { fcm_token: null } }
+    );
+    invalidated = upd.modifiedCount;
+    console.log(
+      `[${logTag}] Invalidated ${invalidated} stale fcm_token(s)`
+    );
+  }
+
+  return {
+    dispatched: result.successCount,
+    failed: result.failureCount,
+    tokens: tokens.length,
+    invalidated,
+  };
+};
+
+// Notifica a los tutores de un estudiante sobre un citatorio recién creado
+// (o cuyo status cambió). `citation` debe traer el `student` populado.
+// Devuelve { dispatched, failed, tokens, invalidated } o { dispatched: 0, reason: "..." }.
+const sendCitationNotification = async (citation) => {
+  const studentId = citation.student?._id || citation.student;
+  const studentName = citation.student
+    ? `${citation.student.first_name || ""} ${citation.student.last_name || ""}`.trim()
+    : "Alumno";
+
+  const guardians = await Guardian.find({
+    students: studentId,
+    school: citation.school,
+  }).select("fcm_token phone name").lean();
+
+  if (!guardians || guardians.length === 0) {
+    return { dispatched: 0, reason: "no_guardians" };
+  }
+
+  const dateStr = new Date(citation.scheduledDate).toLocaleString("es-MX", {
+    weekday: "short",
+    day: "2-digit",
+    month: "short",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+  const typeLabel =
+    citation.type === "academic"
+      ? "Académico"
+      : citation.type === "behavioral"
+      ? "Conducta"
+      : "Administrativo";
+
+  const payload = {
+    title: `Citatorio: ${studentName}`,
+    body: `${typeLabel} - ${dateStr}. ${citation.reason}`,
+    channelId: "eduk_citations_channel",
+    data: {
+      kind: "citation",
+      citation_id: String(citation._id),
+      student_id: String(studentId),
+      scheduledDate: String(citation.scheduledDate),
+      type: citation.type,
+      status: citation.status,
+    },
+  };
+
+  console.log(
+    `[citations] Dispatching citatorio for ${studentName} to ${guardians.length} guardian(s)`
+  );
+  return dispatchToGuardians(guardians, payload, "citations");
+};
+
+// Notifica a los tutores afectados por un aviso recién creado.
+// Determina los destinatarios según el targetType del aviso:
+//   - "general" → todos los estudiantes activos de la escuela
+//   - "group"   → estudiantes cuyo current_group_id está en targetGroups
+//   - "student" → estudiantes en targetStudents
+// Devuelve { dispatched, failed, tokens, invalidated } o { dispatched: 0, reason: "..." }.
+const sendAnnouncementNotification = async (announcement) => {
+  // 1) Resolver los studentIds destinatarios.
+  let studentIds = [];
+  const targetGroupsIds = (announcement.targetGroups || []).map((g) =>
+    typeof g === "object" ? String(g._id || g) : String(g)
+  );
+  const targetStudentsIds = (announcement.targetStudents || []).map((s) =>
+    typeof s === "object" ? String(s._id || s) : String(s)
+  );
+
+  if (announcement.targetType === "general") {
+    const students = await Student.find({
+      school: announcement.school,
+      status: "active",
+    })
+      .select("_id")
+      .lean();
+    studentIds = students.map((s) => s._id);
+  } else if (announcement.targetType === "group") {
+    if (targetGroupsIds.length === 0) {
+      return { dispatched: 0, reason: "no_groups" };
+    }
+    const students = await Student.find({
+      school: announcement.school,
+      current_group_id: { $in: targetGroupsIds },
+      status: "active",
+    })
+      .select("_id")
+      .lean();
+    studentIds = students.map((s) => s._id);
+  } else if (announcement.targetType === "student") {
+    studentIds = targetStudentsIds;
+  }
+
+  if (studentIds.length === 0) {
+    return { dispatched: 0, reason: "no_students" };
+  }
+
+  // 2) Tutores de esos estudiantes.
+  const guardians = await Guardian.find({
+    school: announcement.school,
+    students: { $in: studentIds },
+  })
+    .select("fcm_token phone name")
+    .lean();
+
+  if (!guardians || guardians.length === 0) {
+    return { dispatched: 0, reason: "no_guardians" };
+  }
+
+  // 3) Truncar el mensaje para que entre en el push (Android limita a ~240).
+  const truncated =
+    announcement.message && announcement.message.length > 180
+      ? `${announcement.message.slice(0, 177)}...`
+      : announcement.message || "";
+
+  const priorityPrefix =
+    announcement.priority === "urgent" ? "🚨 Urgente: " : "";
+  const title = `${priorityPrefix}${announcement.title}`;
+
+  const payload = {
+    title,
+    body: truncated,
+    channelId: "eduk_announcements_channel",
+    data: {
+      kind: "announcement",
+      announcement_id: String(announcement._id),
+      targetType: announcement.targetType,
+      priority: announcement.priority,
+    },
+  };
+
+  console.log(
+    `[announcements] Dispatching "${announcement.title}" (${announcement.targetType}) to ${guardians.length} guardian(s) of ${studentIds.length} student(s)`
+  );
+  return dispatchToGuardians(guardians, payload, "announcements");
+};
+
 module.exports = {
   initializeFirebase,
   isFirebaseReady,
   sendToTokens,
   sendAttendanceNotification,
+  sendCitationNotification,
+  sendAnnouncementNotification,
 };

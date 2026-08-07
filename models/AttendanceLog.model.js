@@ -36,6 +36,27 @@ const attendanceLogSchema = new Schema(
       required: [true, "Device is required."],
       trim: true,
     },
+    // Cómo se verificó la identidad del alumno en este evento:
+    //   RFID   → lectura de tarjeta (default histórico: todos los logs
+    //            previos a la autenticación híbrida provienen de lectores RFID)
+    //   FACE   → reconocimiento facial en la terminal ZKTeco (match por PIN)
+    //   MANUAL → alta capturada a mano por personal de la escuela
+    verificationMode: {
+      type: String,
+      enum: {
+        values: ["FACE", "RFID", "MANUAL"],
+        message: "Verification mode must be one of: FACE, RFID, MANUAL.",
+      },
+      default: "RFID",
+    },
+    // Foto capturada por la cámara en el instante del check-in (opcional).
+    // Es evidencia del evento, NO la foto de referencia del alumno
+    // (esa vive en Student.photoUrl).
+    snapshotUrl: {
+      type: String,
+      default: null,
+      trim: true,
+    },
     notification_sent: {
       type: Boolean,
       default: false,

@@ -45,9 +45,13 @@ require("./config")(app); // Middlewares globales (helmet, parsers, logger, etc.
 
 const indexRoutes = require("./routes/index.routes");
 const authRouter = require("./routes/auth.routes");
+const admsRouter = require("./routes/adms.routes");
 
 app.use("/api", indexRoutes); // /api/students, /api/attendance, /api/groups, /api/enrollments
 app.use("/auth", authRouter); // /auth/signup, /auth/login, /auth/verify
+// /iclock/* — push de las terminales ZKTeco (ADMS). Va fuera de /api porque
+// la ruta está fija en el firmware del dispositivo y no es configurable.
+app.use("/iclock", admsRouter);
 
 require("./error-handling")(app); // 404 + manejador central de errores
 

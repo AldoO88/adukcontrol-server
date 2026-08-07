@@ -6,6 +6,7 @@ const mongoose = require("mongoose");
 const TeacherSubject = require("../models/TeacherSubject.model");
 const User = require("../models/User.model");
 const Group = require("../models/Group.model");
+const Subject = require("../models/Subject.model");
 
 const tenantFilter = (req) =>
   req.payload.role === "super_admin"
@@ -13,7 +14,7 @@ const tenantFilter = (req) =>
     : { school: req.payload.schoolId };
 
 // GET /api/teacher-subjects
-// Lista las asignaciones. Filtros: ?teacher_id, ?group_id, ?subject, ?school_year_id
+// Lista las asignaciones. Filtros: ?teacher_id, ?group_id, ?subject_id, ?school_year_id
 const getAllTeacherSubjects = async (req, res, next) => {
   try {
     const filter = { ...tenantFilter(req) };
@@ -23,13 +24,16 @@ const getAllTeacherSubjects = async (req, res, next) => {
     if (req.query.group_id && mongoose.Types.ObjectId.isValid(req.query.group_id)) {
       filter.group_id = req.query.group_id;
     }
-    if (req.query.subject) filter.subject = req.query.subject;
+    if (req.query.subject_id && mongoose.Types.ObjectId.isValid(req.query.subject_id)) {
+      filter.subject_id = req.query.subject_id;
+    }
     if (req.query.school_year_id && mongoose.Types.ObjectId.isValid(req.query.school_year_id)) {
       filter.school_year_id = req.query.school_year_id;
     }
 
     const assignments = await TeacherSubject.find(filter)
       .populate("teacher_id", "name email role phoneNumber")
+      .populate("subject_id", "code name")
       .populate("group_id", "grade section school_year_id shift")
       .populate("school_year_id", "name startDate endDate isActive")
       .sort({ "teacher_id.name": 1 });
@@ -44,15 +48,18 @@ const getAllTeacherSubjects = async (req, res, next) => {
 // Crea una asignación. Auth: admin/registrar.
 const createTeacherSubject = async (req, res, next) => {
   try {
-    const { teacher_id, subject, group_id, school_year_id } = req.body;
+    const { teacher_id, subject_id, group_id, school_year_id } = req.body;
 
-    if (!teacher_id || !subject || !group_id || !school_year_id) {
+    if (!teacher_id || !subject_id || !group_id || !school_year_id) {
       return res
         .status(400)
-        .json({ message: "teacher_id, subject, group_id, school_year_id are required." });
+        .json({ message: "teacher_id, subject_id, group_id, school_year_id are required." });
     }
     if (!mongoose.Types.ObjectId.isValid(teacher_id)) {
       return res.status(400).json({ message: "Invalid teacher_id." });
+    }
+    if (!mongoose.Types.ObjectId.isValid(subject_id)) {
+      return res.status(400).json({ message: "Invalid subject_id." });
     }
     if (!mongoose.Types.ObjectId.isValid(group_id)) {
       return res.status(400).json({ message: "Invalid group_id." });
@@ -70,6 +77,15 @@ const createTeacherSubject = async (req, res, next) => {
       return res
         .status(400)
         .json({ message: `User with role '${teacher.role}' cannot be assigned as teacher.` });
+    }
+
+    // Verificar que la materia existe y pertenece al tenant
+    const subject = await Subject.findOne({
+      _id: subject_id,
+      ...tenantFilter(req),
+    });
+    if (!subject) {
+      return res.status(404).json({ message: "Subject not found in this tenant." });
     }
 
     // Verificar que el group existe y pertenece al tenant
@@ -90,7 +106,7 @@ const createTeacherSubject = async (req, res, next) => {
     const assignment = await TeacherSubject.create({
       school: school || group.school,
       teacher_id,
-      subject: subject.trim(),
+      subject_id,
       group_id,
       school_year_id,
     });

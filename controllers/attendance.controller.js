@@ -6,36 +6,38 @@
 const mongoose = require("mongoose");
 const Student = require("../models/Student.model");
 const AttendanceLog = require("../models/AttendanceLog.model");
-const Guardian = require("../models/Guardian.model");
-const notificationService = require("../services/notification.service");
-const cache = require("../services/cache.service");
+const attendanceService = require("../services/attendance.service");
 
 const tenantFilter = (req) =>
   req.payload.role === "super_admin" ? {} : { school: req.payload.schoolId };
 
-// Determina el siguiente tipo de evento (entry/exit) para un estudiante.
-const determineNextType = async (studentId) => {
-  const lastLog = await AttendanceLog.findOne({ student_id: studentId })
-    .sort({ event_time: -1 })
-    .select("event_type");
-
-  if (!lastLog) return "entry";
-  return lastLog.event_type === "entry" ? "exit" : "entry";
-};
+// Mapea el device_type que manda el lector al verificationMode del log.
+// Los lectores faciales propios se identifican con "face"/"facial"/"camera";
+// cualquier otro valor (o ninguno) se trata como lectura de tarjeta.
+const FACE_DEVICE_TYPES = new Set(["face", "facial", "camera", "zkteco"]);
+const resolveVerificationMode = (deviceType) =>
+  FACE_DEVICE_TYPES.has(String(deviceType || "").toLowerCase())
+    ? "FACE"
+    : "RFID";
 
 // POST /api/attendance/device-trigger
 // Auth: API key del dispositivo (no JWT). No hay req.payload, pero el school
 // se puede obtener del estudiante (ya validado que pertenezca a una escuela activa).
 const deviceTriggerController = async (req, res, next) => {
   try {
-    const { identifier, device_type, device_id, event_time } = req.body;
+    const { identifier, device_type, device_id, event_time, snapshot_url } =
+      req.body;
 
     const identifierUpper = String(identifier).toUpperCase().trim();
+    // El biometricId se compara SIN uppercase: es el User ID literal de la
+    // terminal facial (puede llevar ceros a la izquierda y no se normaliza).
+    const identifierRaw = String(identifier).trim();
 
     const student = await Student.findOne({
       $or: [
         { rfid_card: identifierUpper },
-        { enrollment_number: identifierUpper },
+        { biometricId: identifierRaw },
+        { controlNumber: identifierUpper },
       ],
       status: "active",
     });
@@ -54,8 +56,6 @@ const deviceTriggerController = async (req, res, next) => {
         .json({ message: "Student has no school assigned. Contact support." });
     }
 
-    const eventType = await determineNextType(student._id);
-
     const eventTimeDate = event_time ? new Date(event_time) : new Date();
     if (event_time && Number.isNaN(eventTimeDate.getTime())) {
       return res
@@ -65,81 +65,28 @@ const deviceTriggerController = async (req, res, next) => {
 
     const deviceLabel = `${device_type || "unknown"}@${device_id}`;
 
-    // Desnormalizar school desde el student para acelerar queries tenant-scoped
-    const attendanceLog = await AttendanceLog.create({
-      school: student.school,
-      student_id: student._id,
-      event_time: eventTimeDate,
-      event_type: eventType,
-      device: deviceLabel,
-    });
+    // La creación del log, la invalidación de cache y la notificación en
+    // segundo plano viven en el servicio (compartido con el push ADMS).
+    const { log, eventType, duplicate } =
+      await attendanceService.registerAttendanceEvent({
+        student,
+        eventTime: eventTimeDate,
+        device: deviceLabel,
+        verificationMode: resolveVerificationMode(device_type),
+        snapshotUrl: snapshot_url || null,
+      });
 
-    // Invalidar cache de los tutores afectados — para que el próximo GET del
-    // dashboard vea el nuevo evento al instante (sin esperar el TTL de 5 min).
-    // Busca todos los Guardian records que tienen a este student y borra
-    // su cache de dashboard y de student-grades.
-    try {
-      const affectedGuardians = await Guardian.find({ students: student._id })
-        .select("user_id")
-        .lean();
-      for (const g of affectedGuardians) {
-        await cache.invalidatePattern(`dashboard:${String(g.user_id)}:*`);
-        await cache.invalidatePattern(
-          `student-grades:${String(g.user_id)}:${String(student._id)}*`
-        );
-      }
-      if (affectedGuardians.length > 0) {
-        console.log(
-          `[attendance] Invalidated cache for ${affectedGuardians.length} guardian(s) of student ${student._id}`
-        );
-      }
-    } catch (cacheErr) {
-      // No crítico: el cache tiene TTL y se autorrecupera
-      console.warn(
-        `[attendance] Cache invalidation failed: ${cacheErr.message}`
-      );
-    }
-
-    process.nextTick(() => {
-      (async () => {
-        try {
-          const result = await notificationService.sendAttendanceNotification(
-            student,
-            attendanceLog
-          );
-          if (result && result.dispatched && result.dispatched > 0) {
-            await AttendanceLog.updateOne(
-              { _id: attendanceLog._id },
-              { $set: { notification_sent: true } }
-            );
-            console.log(
-              `[attendance] Push notifications dispatched for log ${attendanceLog._id} (${result.dispatched}/${result.tokens || 0})`
-            );
-          } else {
-            console.log(
-              `[attendance] No push notifications dispatched for log ${attendanceLog._id}: ${
-                result && result.reason ? result.reason : "unknown"
-              }`
-            );
-          }
-        } catch (err) {
-          console.error(
-            `[attendance] Background notification error for log ${attendanceLog._id}: ${err.message}`
-          );
-        }
-      })();
-    });
-
-    res.status(201).json({
-      log: attendanceLog,
+    res.status(duplicate ? 200 : 201).json({
+      log,
       student: {
         _id: student._id,
-        enrollment_number: student.enrollment_number,
+        controlNumber: student.controlNumber,
         first_name: student.first_name,
         last_name: student.last_name,
       },
       event_type: eventType,
-      notification_queued: true,
+      duplicate,
+      notification_queued: !duplicate,
     });
   } catch (error) {
     next(error);
@@ -189,7 +136,7 @@ const getAttendanceLogsController = async (req, res, next) => {
 
     const [items, total] = await Promise.all([
       AttendanceLog.find(filter)
-        .populate("student_id", "enrollment_number first_name last_name")
+        .populate("student_id", "controlNumber first_name last_name")
         .sort({ event_time: -1 })
         .skip(skip)
         .limit(limitNum),

@@ -14,20 +14,24 @@ Express + MongoDB backend for **EdukControl**, a multi-tenant SaaS for school at
 - `node scripts/retry-pending-uploads.js` — processes the queue of uploads that failed all inline retries and were persisted to disk. Run periodically (cron every 5-15 min) or after a Cloudinary outage.
 - `node scripts/cleanup-old-s3-uploads.js` — deletes S3 objects in `pending-uploads/` older than `S3_CLEANUP_MAX_AGE_DAYS` (default 30). Requires `PENDING_UPLOADS_BACKEND=s3`. Complements the S3 lifecycle policy.
 - `node scripts/migrate-cloudinary-folder-structure.js` — one-shot: moves legacy assets from `edukcontrol/schools/logos/` and `edukcontrol/students/` to the new per-school structure. Idempotent. Add `DRY_RUN=1` to simulate.
+- `node scripts/migrate-grade-periods.js` — one-shot: `Grade.period` (Number) → `Grade.gradingPeriod` (ref `GradingPeriod`) + `period_order`. Crea los `GradingPeriod` que falten a partir de los valores que existan en los datos y dropea el índice `uniq_enrollment_subject_period`. Idempotente. `DRY_RUN=1` para simular. **Backup antes.** Las fechas de los períodos creados son un placeholder repartido en tramos iguales sobre el `SchoolYear` — la escuela debe corregirlas.
+- `node scripts/migrate-subjects-to-refs.js` — one-shot: `Grade.subject` y `TeacherSubject.subject` (String) → `subject_id` (ref `Subject`). Empata contra el catálogo ignorando mayúsculas/acentos/espacios y crea las materias faltantes con un `code` derivado (`MAT-001`). Tiene un **pre-flight que aborta sin escribir** si dos grafías de la misma materia colisionarían contra los índices únicos nuevos. Idempotente. `DRY_RUN=1` para simular. **Correr DESPUÉS de `migrate-grade-periods.js`** (el pre-flight agrupa por `gradingPeriod`).
 - There is **no test framework, no test script, and no test directory**. Don't suggest `npm test`.
 
 ## Entry points & layout
 
 - `server.js` — process entrypoint. Starts the HTTP listener, handles `SIGTERM`/`SIGINT`/`uncaughtException` shutdown. Delegates the app build to `app.js`.
 - `app.js` — builds the Express app: loads env, connects Mongo (`db/index.js`), initializes Firebase (`services/notification.service.js`), mounts global middleware (`config/index.js`), mounts routers, attaches error handler (`error-handling/index.js`).
-- `routes/` ↔ `controllers/` are 1:1 (`auth`, `schools`, `students`, `groups`, `enrollments`, `attendance`).
-- `middleware/` — `jwt.middleware.js` (verifies `Authorization: Bearer`), `authorize.middleware.js` (`authorize(...roles)`), `device.middleware.js` (verifies the device API key with `crypto.timingSafeEqual`).
+- `routes/` ↔ `controllers/` are 1:1 (`auth`, `schools`, `students`, `groups`, `enrollments`, `attendance`, `adms`).
+- `middleware/` — `jwt.middleware.js` (verifies `Authorization: Bearer`), `authorize.middleware.js` (`authorize(...roles)`), `device.middleware.js` (`verifyDeviceApiKey` compares the device API key with `crypto.timingSafeEqual`; `verifyAdmsDevice` allowlists ZKTeco terminals by serial number and resolves their tenant), `tenant-context.middleware.js` (`attachSchoolContext`, `attachActiveSchoolYear`, `requireGuardianOf` — para los endpoints del Guardian Dashboard que necesitan school/schoolYear/relación tutor-student inyectados en `req`).
 - `services/notification.service.js` — Firebase Admin SDK wrapper; safe to call when Firebase is unconfigured (logs warning, returns null).
-- `models/` — `User`, `School`, `SchoolYear`, `Student`, `AttendanceLog`, `Enrollment`, `Group`, `Grade`, `Subject`, `TeacherSubject`, `Guardian`, `AssetVersion`, `DisciplinaryReport`, `ConductConfig`.
+- `services/attendance.service.js` — `registerAttendanceEvent` centraliza lo que comparten `POST /api/attendance/device-trigger` y el push ADMS de `/iclock/cdata`: supresión de duplicados (±60 s por alumno+dispositivo), alternancia entry/exit, creación del `AttendanceLog`, invalidación del cache de los tutores y disparo de la notificación push en `process.nextTick`.
+- `models/` — `User`, `School`, `SchoolYear`, `Student`, `AttendanceLog`, `Enrollment`, `Group`, `Grade`, `Subject`, `TeacherSubject`, `Guardian`, `AssetVersion`, `ConductLog`, `ConductConfig`, `Announcement`, `Citation`, `GradingPeriod`, `SchoolShift`, `ClassSchedule`.
 - `db/index.js` — Mongoose connection (exits the process on failure).
 - `error-handling/index.js` — 404 catch-all + central error handler (translates Mongoose `ValidationError`, `CastError`, `11000` duplicate-key to HTTP responses).
-- `services/dashboard-cache.service.js` — invalidación compartida de las keys de cache del dashboard (`dashboard:*`, `student-grades:*`, `student-kpis:*`) para todos los tutores de un `studentId`. Se llama desde `grades.controller.js` y `disciplinary-reports.controller.js`.
-- `services/conduct.service.js` — resuelve la `ConductConfig` de una escuela con fallback a defaults (`minor=5, moderate=10, severe=20, baseline=100, floor=0`).
+- `services/dashboard-cache.service.js` — invalidación compartida de las keys de cache del dashboard (`dashboard:*`, `student-grades:*`, `student-kpis:*`) para todos los tutores de un `studentId`. Se llama desde `grades.controller.js` y `conduct-logs.controller.js`.
+- `services/conduct.service.js` — resuelve la `ConductConfig` de una escuela con fallback a defaults (`weights={minor:5, moderate:10, severe:20}, merit_points=5, baseline=100, floor=0`). Ofrece `getImpactForEvent` (magnitud con signo) y `clampScore`.
+- `services/student-kpi.service.js` — cálculos puros de los KPIs del Guardian Dashboard. `getConductKpi` aplica la fórmula `score = clamp(baseline + signedTotal, floor, baseline)` donde `signedTotal = merits - demerits`.
 - `scripts/migrate-to-multitenant.js` — one-shot migration for the multi-tenant rollout.
 
 ## Multi-tenant architecture (MUST FOLLOW)
@@ -54,7 +58,7 @@ Rules:
 2. **JWT payload carries `schoolId`** (signed at login/signup in `controllers/auth.controller.js`). Never read the tenant from request body or query — only from `req.payload.schoolId`.
 3. **`super_admin` is the only cross-tenant role.** It has `school: null` in the DB (the `required` is a function that returns `false` for `super_admin`). It bypasses the tenant filter in every controller.
 4. **All `findById` are forbidden.** Use `findOne({ _id, ...tenantFilter })` so a wrong tenant returns 404, not a leak.
-5. **Compound unique indexes are scoped per school.** A student's `enrollment_number` is unique within their school, not globally. Don't undo the compound indexes; see the data model table below.
+5. **Compound unique indexes are scoped per school.** A student's `controlNumber` is unique within their school, not globally. Don't undo the compound indexes; see the data model table below.
 6. **`/api/attendance/device-trigger` is the only endpoint without JWT.** It identifies the tenant by denormalizing `student.school` after looking the student up. The student MUST have a `school` set or the request is rejected with 500.
 
 ## API surface
@@ -80,7 +84,7 @@ All under `/api` (no `/v1` prefix). Auth endpoints are under `/auth` (no `/api` 
 | GET | `/api/uploads/events` | JWT (query, header, or cookie) | SSE stream que notifica al cliente cuando un retry de upload termina. |
 | POST | `/api/uploads/retry` | JWT + admin/registrar/super_admin | Reintenta manualmente un upload pendiente para una entidad. |
 | POST | `/auth/logout` | none | Limpia la cookie HttpOnly de auth. |
-| POST | `/api/students/register` | JWT + `admin`/`registrar` | `enrollment_number` and `rfid_card` are uppercased on save; unique per school. |
+| POST | `/api/students/register` | JWT + `admin`/`registrar` | `rfid_card` is uppercased on save; `controlNumber` is auto-generated (10 chars: YY + SHIFT + CCT4 + CONSEC). Unique per school. |
 | GET | `/api/students` | JWT + any staff role | Paginated (`page`, `limit` max 100), filter by `status`, `group`, free-text `search`. |
 | GET | `/api/students/:studentId` | JWT + any staff role | |
 | PUT | `/api/students/:studentId` | JWT + `admin`/`registrar` | `school` cannot be changed by non-`super_admin`. |
@@ -93,15 +97,17 @@ All under `/api` (no `/v1` prefix). Auth endpoints are under `/auth` (no `/api` 
 | GET/POST | `/api/enrollments` | JWT + role-scoped | |
 | GET/PUT/DELETE | `/api/enrollments/:enrollmentId` | JWT + role-scoped | |
 | POST | `/api/attendance/device-trigger` | **device API key** | Called by hardware. See below. |
+| GET/POST | `/iclock/cdata`, `/iclock/getrequest`, `/iclock/devicecmd` | **ZKTeco serial allowlist** | ADMS push from hybrid RFID + face terminals. Outside `/api` (path fixed in firmware). Plain-text responses only. See below. |
 | GET | `/api/attendance/logs` | JWT + any staff role | Paginated (`limit` max 200), filter by `student_id`, `event_type`, `from`, `to`. |
-| POST | `/api/disciplinary-reports` | JWT + staff (admin, principal, registrar, teacher, prefect, social_worker) | Crea un reporte de conducta. `points_deduction` se copia de la `ConductConfig` vigente de la escuela. Invalida el cache del dashboard de los tutores del alumno. |
-| GET | `/api/disciplinary-reports` | JWT + staff | Lista paginada, filtra por `student_id`, `school_year_id`, `severity`, `status`, `from`, `to`. |
-| GET | `/api/disciplinary-reports/:reportId` | JWT + staff | Detalle. |
-| PUT | `/api/disciplinary-reports/:reportId/cancel` | JWT + admin / principal / registrar | Soft-cancel: cambia `status` a `cancelled` (no borra). Body opcional: `{ reason }`. Invalida cache. |
-| DELETE | `/api/disciplinary-reports/:reportId` | JWT + `super_admin` | Borrado físico. NO usar en el flujo normal — preferir cancel. |
-| GET | `/api/guardians/me/students/:studentId/disciplinary-reports` | JWT + tutor dueño | Vista del tutor. Por default NO muestra cancelados (`?include_cancelled=true` para incluirlos). Filtra por `school_year_id`. |
+| POST | `/api/conduct-logs` | JWT + staff (admin, principal, registrar, teacher, prefect, social_worker) | Crea un evento de conducta (`eventType: "demerit" \| "merit"`). `points_impact` se copia de la `ConductConfig` vigente de la escuela. Invalida el cache del dashboard de los tutores del alumno. |
+| GET | `/api/conduct-logs` | JWT + staff | Lista paginada, filtra por `student_id`, `school_year_id`, `eventType`, `severity`, `status`, `from`, `to`. |
+| GET | `/api/conduct-logs/:logId` | JWT + staff | Detalle. |
+| PUT | `/api/conduct-logs/:logId/cancel` | JWT + admin / principal / registrar | Soft-cancel: cambia `status` a `cancelled` (no borra). Body opcional: `{ reason }`. Invalida cache. |
+| DELETE | `/api/conduct-logs/:logId` | JWT + `super_admin` | Borrado físico. NO usar en el flujo normal — preferir cancel. |
+| GET | `/api/guardians/me/students/:studentId/conduct-logs` | JWT + tutor dueño | Vista del tutor. Por default NO muestra cancelados (`?include_cancelled=true` para incluirlos). Filtra por `school_year_id`, `eventType`. |
+| GET | `/api/guardians/me/students/:studentId/conduct-summary` | JWT + tutor dueño | Resumen de conducta para el Guardian Dashboard (cuando el padre selecciona un hijo). Devuelve `{ success, data: { currentScore, maxScore, recentLogs } }`. `currentScore` es el acumulado histórico (merits − demerits, clamp a [0, baseline]). Requiere los middlewares `attachSchoolContext`, `attachActiveSchoolYear` y `requireGuardianOf` (auto-inyectados en la ruta). |
 | GET | `/api/conduct-config` | JWT + staff | Devuelve la config efectiva de la escuela (mezcla con defaults si nunca se creó). |
-| PUT | `/api/conduct-config` | JWT + admin / registrar / super_admin | Upsert. Body: `{ weights?: { minor?, moderate?, severe? }, baseline?, floor?, school? }` (school solo para super_admin). |
+| PUT | `/api/conduct-config` | JWT + admin / registrar / super_admin | Upsert. Body: `{ weights?: { minor?, moderate?, severe? }, merit_points?, baseline?, floor?, school? }` (school solo para super_admin). |
 
 Health: `GET /health` (unauthenticated). Root: `GET /` returns service banner.
 
@@ -109,21 +115,51 @@ Health: `GET /health` (unauthenticated). Root: `GET /` returns service banner.
 
 1. **User JWT** — `Authorization: Bearer <token>`. Token payload: `{ _id, email, name, role, schoolId }`. Verified in `middleware/jwt.middleware.js#isAuthenticated`; role gate via `middleware/authorize.middleware.js#authorize(...roles)`.
 2. **Device API key** — consumed by `POST /api/attendance/device-trigger`. Header `X-Device-Api-Key` (or `X-Api-Key`, or `body.api_key`) must match `DEVICE_TRIGGER_API_KEY` via `crypto.timingSafeEqual`. Rate-limited separately at 300 req/min.
+3. **ZKTeco serial allowlist** — consumed by `/iclock/*`. The firmware can't send custom headers, so the `SN` query param is checked against `ADMS_ALLOWED_SERIALS`. Rate-limited at 600 req/min (terminals poll for commands every few seconds).
 
 `app.set('trust proxy', 1)` is set in `config/index.js` so rate limiting works correctly behind a reverse proxy — keep it.
 
 ## `device-trigger` quirks (controllers/attendance.controller.js)
 
-- Body shape: `{ identifier, device_type, device_id, event_time? }`. `identifier` is matched case-insensitively against `Student.rfid_card` OR `Student.enrollment_number`, only for `status: 'active'`.
+- Body shape: `{ identifier, device_type, device_id, event_time?, snapshot_url? }`. `identifier` is matched against `Student.rfid_card` OR `Student.biometricId` OR `Student.controlNumber`, only for `status: 'active'`. `rfid_card`/`controlNumber` match uppercased; `biometricId` matches the raw trimmed string (the terminal's User ID is case/zero-padding sensitive).
 - `event_type` (`entry`/`exit`) is **auto-determined** by the last `AttendanceLog` for that student — alternates. The body does not accept `event_type`.
 - `event_time` is optional (defaults to `now`) and must be ISO 8601 if provided.
 - `device` is stored as `${device_type || 'unknown'}@${device_id}`.
+- `verificationMode` is derived from `device_type`: `face`/`facial`/`camera`/`zkteco` → `FACE`, anything else → `RFID`.
 - `school` is denormalized from `student.school` into the log so tenant queries don't need a join.
 - Push notification dispatch runs in **`process.nextTick`** after the response is sent; the log is created first, then `notification_sent` is flipped to `true` only on successful delivery. Expect `notification_sent` to lag behind API success.
+- Duplicate suppression: a log for the same `(student, device)` within **±60 s** reuses the existing document, responds `200` (not `201`) with `duplicate: true`, and does **not** re-notify. Lives in `services/attendance.service.js`.
+
+## Hybrid auth: ADMS push from ZKTeco terminals (`/iclock/*`)
+
+Terminals that do both RFID and face recognition speak the ZKTeco Push SDK, not our JSON API. `controllers/adms.controller.js` + `routes/adms.routes.js` implement it. Mounted at **`/iclock` in `app.js`, outside `/api`** — the path is hard-coded in the device firmware (only host and port are configurable). Do not move it.
+
+| Method | Path | Purpose |
+|---|---|---|
+| GET | `/iclock/cdata?SN=..&options=all` | Handshake. Returns the plain-text config block; the device won't push until it gets this. |
+| POST | `/iclock/cdata?SN=..&table=ATTLOG` | The actual punch push. `table` values other than `ATTLOG` are acked and discarded. |
+| GET | `/iclock/getrequest?SN=..` | Command polling. Returns `OK` (no command queue yet — this is the hook for remote face enrollment). |
+| POST | `/iclock/devicecmd?SN=..` | Command ACK. Returns `OK`. |
+
+Protocol rules that are easy to break:
+
+- **Always respond `200` with `Content-Type: text/plain`.** A 4xx/5xx (or a JSON body) makes the terminal re-send the whole batch in a loop until its buffer fills. Unmatched records are logged to console and acked anyway; even the outer `catch` returns `200 OK: 0`. The rate-limit handler and the auth middleware also reply in plain text.
+- **ATTLOG body format**: `\n`-separated lines, `\t`-separated columns — `PIN, DateTime, Status, Verify, WorkCode, Reserved1, Reserved2`. It arrives as `text/plain` (sometimes with no `Content-Type`), so the route adds `express.text({ type: () => true })`; `express.json()` has already run globally, so JSON integrator payloads still parse to objects and the text parser skips them (`req._body`).
+- **`Card` is not in ATTLOG.** When a student taps a card the terminal resolves it to that user's internal PIN and reports the PIN with `Verify=4`. So `verificationMode` comes from the `Verify` code first (`15,20–23` → `FACE`; `2,4` → `RFID`), and only falls back to "is a `Card` field present" for JSON payloads.
+- **Timestamps have no timezone.** The device sends local wall-clock time. Set `ADMS_TZ_OFFSET_MINUTES` (e.g. `-360` for UTC−6) or the server will interpret it in its own zone — which is UTC in most containers.
+- **Auth is an SN allowlist, not a key.** The firmware cannot send custom headers, so `verifyDeviceApiKey` is unusable here. `verifyAdmsDevice` checks the `SN` query param against `ADMS_ALLOWED_SERIALS`. The SN travels in cleartext — serve `/iclock` over HTTPS and IP-restrict it to the school network.
+- **Cross-tenant ambiguity.** `biometricId` is unique *per school*, and the push carries no tenant context, so the same PIN can exist in two schools. The lookup uses `.limit(2)`: two matches → the record is dropped with an `ambiguous` warning rather than credited to the wrong student. Set `ADMS_DEVICE_SCHOOL_MAP` (`{"<SN>":"<schoolId>"}`) to scope each terminal to one school and remove the ambiguity entirely.
+- A JSON/urlencoded body is also accepted (for integrators that put middleware in front of the device): `{ Card, PIN | User_ID, DateTime, Verify?, snapshotUrl? }`, a bare array, or `{ records: [...] }` / `{ data: [...] }`.
 
 ## Required environment (.env)
 
 `MONGO_URI`, `SECRET_KEY` (≥32 chars, used for JWT), `FIREBASE_SERVICE_ACCOUNT_PATH`, `DEVICE_TRIGGER_API_KEY`, `PORT` (default 5000), `NODE_ENV` (default `development`), `ORIGIN` (default `http://localhost:5173`).
+
+`ADMS_ALLOWED_SERIALS` — comma-separated allowlist of ZKTeco terminal serial numbers permitted to push to `/iclock/*`. **Required in production**: if unset, any SN is accepted (a warning is logged per request).
+
+`ADMS_TZ_OFFSET_MINUTES` — offset in minutes between the terminals' local wall-clock time and UTC (e.g. `-360` for UTC−6). Set it whenever the backend does not run in the school's timezone, or every punch will be stored hours off.
+
+`ADMS_DEVICE_SCHOOL_MAP` (opcional) — JSON map `{"<SN>": "<schoolId>"}` binding each terminal to a school. Scopes the student lookup to one tenant and prevents ambiguous PIN matches across schools. Invalid JSON is logged and ignored.
 
 `CLOUDINARY_CLOUD_NAME`, `CLOUDINARY_API_KEY`, `CLOUDINARY_API_SECRET` — required for the student photo upload endpoint (`POST /api/students/:studentId/photo`). Without them, the upload will fail with a Cloudinary auth error.
 
@@ -145,17 +181,41 @@ Firebase service account JSON (`config/firebase-service-account.json`) is **giti
 - `PUT /api/schools/:schoolId` only accepts `name` and `isActive` (whitelist). The logo is NOT updated via this endpoint — use `POST /api/schools/:schoolId/logo` (upload/replace) or `DELETE /api/schools/:schoolId/logo` (remove). `logoUrl` is intentionally excluded from the whitelist to prevent a string-from-body update that bypasses Cloudinary.
 - `SchoolYear` (`school`, `name` matching `^\d{4}-\d{4}$`, `startDate`, `endDate`, `isActive`) is the source of truth for school cycles. `Group`, `Enrollment`, `Grade` (denormalized from `Enrollment`), and `TeacherSubject` all reference it via `school_year_id` (ObjectId ref) instead of a raw string. Unique per school: `{ school, name }`.
 - `Student.status` ∈ `active | withdrawn_temp | withdrawn_permanent`.
-- `AttendanceLog.event_type` ∈ `entry | exit`.
+- `AttendanceLog.event_type` ∈ `entry | exit`. `AttendanceLog.verificationMode` ∈ `FACE | RFID | MANUAL` (default `RFID` — historic logs all predate facial recognition). `AttendanceLog.snapshotUrl` is the camera capture of the check-in event, not the student's reference photo (that one is `Student.photoUrl`).
+- `Student.biometricId` is the User ID / PIN the student is enrolled under in the ZKTeco terminal. Stored as `String` (leading zeros are significant: `"0042" ≠ "42"`). `Student.isFaceEnrolled` marks that the face template was actually loaded onto the device, as distinct from merely having a `biometricId` assigned.
 - `Group.grade` ∈ `{1, 2, 3}`.
 - `Enrollment.cycle_status` ∈ `enrolled | withdrawn | graduated | transferred`.
 - Unique compound indexes (per school):
   - `User`: `{ school, email }` unique, partial on `school: ObjectId`; plus `{ email }` unique, partial on `school: null` for super_admins.
-  - `Student`: `{ school, enrollment_number }` unique; `{ school, rfid_card }` unique, partial on `rfid_card: string`.
+  - `Student`: `{ school, controlNumber }` unique, partial on `controlNumber: string`; `{ school, rfid_card }` unique, partial on `rfid_card: string`.
   - `Group`: `{ school, grade, section, school_year_id }` unique.
   - `Enrollment`: `{ school, student_id, school_year_id }` unique.
   - `SchoolYear`: `{ school, name }` unique.
   - `ConductConfig`: `{ school }` unique (un único doc por escuela).
+  - `GradingPeriod`: `{ school, school_year_id, order }` unique; `{ school, school_year_id, name }` unique.
+  - `SchoolShift`: `{ school, school_year_id, name }` unique — el nombre sí se repite ENTRE ciclos, que es lo que permite clonar la campana sin tocar los horarios del año anterior.
+  - `ClassSchedule`: `{ school_year_id, group_id, subject_id, teacher_id }` unique (la co-docencia son dos documentos, y el índice lo permite).
+  - `Grade`: `{ enrollment_id, subject_id, gradingPeriod }` unique — **sustituye** a `uniq_enrollment_subject_period`.
+  - `TeacherSubject`: `{ teacher_id, subject_id, group_id, school_year_id }` unique — **sustituye** a `uniq_teacher_subject_group_year`.
+  - `Subject`: `{ school, code }` unique; `{ school, name }` **no** unique (los datos migrados pueden traer nombres repetidos; deduplicar el catálogo es tarea manual).
+  - Mongoose crea los índices nuevos pero **nunca borra los viejos**: los dropean las migraciones. Un índice único sobre un campo eliminado sigue exigiendo unicidad sobre `null` y bloquea la segunda inserción de cada documento.
 - Mongoose `__v` is globally disabled (`versionKey: false`).
+
+## Períodos de evaluación y horarios (GradingPeriod / SchoolShift / ClassSchedule)
+
+Tres modelos configurables por escuela. **Todavía no tienen controllers ni rutas** — sólo los esquemas y la migración.
+
+- **`GradingPeriod`** — catálogo de períodos por `(school, school_year_id)`. Sustituye al enum fijo de trimestres: una escuela puede usar bimestres y otra trimestres. `order: 0` significa *calificación final del ciclo* (conserva la semántica del viejo `period: 0`); `1..N` son los ordinarios en orden cronológico. `GradingPeriod.findByDate(school, yearId, date)` resuelve el período vigente e ignora el `order: 0`. `isClosed` es una bandera de negocio para bloquear captura — **el schema no la aplica**, tiene que hacerlo el controller.
+- **`SchoolShift`** — la campana de la escuela, **por ciclo** (`school_year_id` es obligatorio): `startTime`/`endTime` del turno, `moduleDurationMinutes` nominal y un array de subdocumentos `timeBlocks` (`name`, `startTime`, `endTime`, `isBreak`, `order`). Las horas se guardan como String `"HH:mm"` y no como `Date` a propósito: un módulo es una hora de reloj recurrente, no un instante, y así no se arrastra zona horaria ni horario de verano. El `pre("validate")` **reordena `timeBlocks` cronológicamente y recalcula `order`** (el orden en que llega el array es irrelevante), y rechaza solapamientos, bloques invertidos y bloques fuera de la ventana del turno. Métodos: `resolveBlocks(ids)` y `areContiguous(ids)`.
+- **`ClassSchedule`** — pivote del horario: `school_year_id` + `group_id` + `subject_id` + `teacher_id` + `school_shift_id`, con un array `scheduleSlots` de `{ dayOfWeek, timeBlockRefs[], classroom }`. **Un módulo doble o triple es simplemente varios `timeBlockRefs` contiguos en el mismo slot** — no hay documentos duplicados ni campo de duración. `dayOfWeek` usa la convención de `Date.prototype.getDay()` (0 = domingo … 6 = sábado) para poder filtrar con `new Date().getDay()` sin tabla de conversión.
+
+Cosas que el schema **no** puede validar y tienen que vivir en el controller:
+
+- **Arranque de ciclo:** para el año nuevo se **clona** el `SchoolShift` del anterior. Al clonar se generan `_id` de bloque nuevos, así que los `ClassSchedule` viejos siguen resolviendo contra la campana que estaba vigente cuando se armaron. Nunca reutilices el turno del ciclo pasado editándolo en sitio.
+- **`timeBlockRefs` apunta a subdocumentos de otra colección.** Por eso `ClassSchedule` guarda también `school_shift_id`: sin él esos ObjectIds no se pueden resolver, y Mongoose no puede poblar subdocumentos cross-collection. Al editar `SchoolShift.timeBlocks` **nunca** reconstruyas el array desde cero (regenera todos los `_id` e invalida todos los horarios): modifica los subdocs por `_id` y haz push sólo de los nuevos. Antes de quitar un bloque, `ClassSchedule.exists({ "scheduleSlots.timeBlockRefs": blockId })` → 409 si está en uso.
+- **Empalmes.** Un índice único no sirve: los slots viven en un array y el choque cruza documentos. Consulta previa al guardado con `$elemMatch` sobre `{ dayOfWeek, timeBlockRefs: { $in: [...] } }` filtrando por `$or: [{ group_id }, { teacher_id }]` (ver el comentario al pie de `ClassSchedule.model.js`).
+- **Recesos y contigüidad.** Rechazar `timeBlockRefs` con `isBreak: true` y exigir `shift.areContiguous(refs)` para los módulos dobles.
+- Los hooks son `pre("validate")`, así que corren en `save()` y en `doc.validate()` pero **no** en `validateSync()`.
 
 ## Guardian Dashboard — KPIs del tutor
 
@@ -170,12 +230,14 @@ Firebase service account JSON (`config/firebase-service-account.json`) is **giti
   - Si solo T1 evaluado (9.0) → `9.0`.
   - Si T1 (9.0) y T2 (8.0) → `8.5` (media de los trimestres evaluados).
   - Se consideran los `period ∈ {1,2,3}` de `Grade`. `period=0` (calificación final) NO entra.
-- **`kpis.conduct`** — `Score de Conducta`:
-  - `score = max(baseline - sum(points_deduction de reportes activos del año), floor)`.
-  - `points_deduction` se congela al crear el reporte (no se recalcula contra cambios futuros en `ConductConfig`).
-  - Defaults si la escuela nunca creó su `ConductConfig`: `baseline=100`, `weights={minor:5, moderate:10, severe:20}`, `floor=0`.
+- **`kpis.conduct`** — `Score de Conducta` (ledger-style: merits + demerits):
+  - `score = clamp(baseline + signedTotal, floor, baseline)`, donde `signedTotal = sum(merits) - sum(demerits)`.
+  - El clamp garantiza que el score nunca baja del `floor` ni sube del `baseline` (los méritos solo recuperan puntos perdidos, no superan el techo).
+  - `points_impact` se congela al crear el evento (no se recalcula contra cambios futuros en `ConductConfig`).
+  - Defaults si la escuela nunca creó su `ConductConfig`: `baseline=100`, `floor=0`, `weights={minor:5, moderate:10, severe:20}`, `merit_points=5`.
+  - El payload incluye además: `signed_total`, `total_events`, `demerits_count`, `merits_count` (para que la UI muestre "X demerits, Y merits").
 
-Cualquier cambio en `Grade` o `DisciplinaryReport` invalida el cache del dashboard (TTL 5 min) de TODOS los tutores del estudiante afectado vía `services/dashboard-cache.service.js`.
+Cualquier cambio en `Grade` o `ConductLog` invalida el cache del dashboard (TTL 5 min) de TODOS los tutores del estudiante afectado vía `services/dashboard-cache.service.js`.
 
 ## Conventions
 

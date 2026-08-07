@@ -70,6 +70,7 @@ const signupController = async (req, res, next) => {
   try {
     const {
       name,
+      last_name,
       email,
       password,
       role,
@@ -83,6 +84,9 @@ const signupController = async (req, res, next) => {
     if (!name || !name.trim()) {
       return res.status(400).json({ message: "name is required." });
     }
+    if (!last_name || !last_name.trim()) {
+      return res.status(400).json({ message: "last_name is required." });
+    } 
     if (!phoneNumber || !/^\d{10}$/.test(phoneNumber)) {
       return res
         .status(400)

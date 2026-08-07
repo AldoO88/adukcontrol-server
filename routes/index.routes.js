@@ -15,8 +15,10 @@ const uploadsRouter = require("./uploads.routes"); // /api/uploads (SSE + manual
 const subjectsRouter = require("./subjects.routes"); // /api/subjects (catálogo de materias)
 const teacherSubjectsRouter = require("./teacher-subjects.routes"); // /api/teacher-subjects (asignaciones)
 const { studentOnlyGrades, gradeById } = require("./grades.routes"); // calificaciones
-const disciplinaryReportsRouter = require("./disciplinary-reports.routes"); // /api/disciplinary-reports (reportes de conducta)
-const conductConfigRouter = require("./conduct-config.routes"); // /api/conduct-config (config de descuentos)
+const conductLogsRouter = require("./conduct-logs.routes"); // /api/conduct-logs (ledger de conducta: demerits + merits)
+const conductConfigRouter = require("./conduct-config.routes"); // /api/conduct-config (config de impacto)
+const announcementsRouter = require("./announcements.routes"); // /api/announcements (CRUD staff de avisos)
+const citationsRouter = require("./citations.routes"); // /api/citations (CRUD staff de citatorios)
 
 // Health check rápido bajo /api
 router.get("/", (req, res, next) => {
@@ -34,8 +36,10 @@ router.use("/webhooks", webhooksRouter);
 router.use("/uploads", uploadsRouter);
 router.use("/subjects", subjectsRouter);
 router.use("/teacher-subjects", teacherSubjectsRouter);
-router.use("/disciplinary-reports", disciplinaryReportsRouter);
+router.use("/conduct-logs", conductLogsRouter);
 router.use("/conduct-config", conductConfigRouter);
+router.use("/announcements", announcementsRouter);
+router.use("/citations", citationsRouter);
 // Calificaciones: rutas anidadas bajo students + rutas planas en /grades
 router.use("/students/:studentId/grades", studentOnlyGrades);
 router.use("/grades", gradeById);

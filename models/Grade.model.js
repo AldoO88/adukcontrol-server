@@ -3,6 +3,13 @@
 // un período específico de un ciclo escolar. Vinculado a la Enrollment del
 // año (lo que garantiza que la nota pertenece al ciclo correcto y a la
 // escuela del tenant).
+//
+// BREAKING CHANGES (migrar los datos ANTES de desplegar, en este orden):
+//   1. `period: Number` (0|1|2|3) → `gradingPeriod` (ref GradingPeriod) +
+//      `period_order` (copia desnormalizada del orden).
+//      → node scripts/migrate-grade-periods.js
+//   2. `subject: String` → `subject_id` (ref Subject).
+//      → node scripts/migrate-subjects-to-refs.js
 const { Schema, model } = require("mongoose");
 
 const gradeSchema = new Schema(
@@ -32,21 +39,35 @@ const gradeSchema = new Schema(
       required: [true, "School year reference is required."],
       index: true,
     },
-    // Materia (string libre por ahora; futuro: modelo Subject separado)
-    subject: {
-      type: String,
-      required: [true, "Subject is required."],
-      trim: true,
+    // Materia del catálogo de la escuela. Antes era un String libre, lo que
+    // permitía que "Matemáticas", "matematicas" y "Mate" convivieran como
+    // materias distintas y rompía los promedios por materia.
+    subject_id: {
+      type: Schema.Types.ObjectId,
+      ref: "Subject",
+      required: [true, "Subject reference is required."],
+      index: true,
     },
-    // Período/trimestre: 1, 2, 3. 0 = calificación final del año.
-    period: {
+    // Período de evaluación. Sustituye al viejo `period: Number` (0|1|2|3):
+    // ahora el catálogo es configurable por escuela y por ciclo, así que una
+    // escuela puede evaluar por trimestres y otra por bimestres.
+    // Ver models/GradingPeriod.model.js.
+    gradingPeriod: {
+      type: Schema.Types.ObjectId,
+      ref: "GradingPeriod",
+      required: [true, "Grading period reference is required."],
+      index: true,
+    },
+    // DESNORMALIZADO desde GradingPeriod.order (0 = final, 1..N = ordinarios).
+    // Existe para poder ordenar y agrupar por período sin un $lookup en cada
+    // consulta: los promedios "by_period" del dashboard son la ruta caliente.
+    // Se escribe exclusivamente desde el controller al resolver el
+    // gradingPeriod — si se reordenan los períodos de un ciclo hay que
+    // recalcularlo (ver scripts/migrate-grade-periods.js).
+    period_order: {
       type: Number,
-      required: [true, "Period is required."],
-      enum: {
-        values: [0, 1, 2, 3],
-        message: "period must be 0 (final), 1, 2 or 3.",
-      },
-      default: 1,
+      required: [true, "period_order is required."],
+      min: [0, "period_order must be 0 (final) or a positive sequence number."],
     },
     // Calificación numérica (escala 0-10, sistema educativo mexicano)
     value: {
@@ -81,16 +102,20 @@ const gradeSchema = new Schema(
 );
 
 // Índices
-// Una materia solo se califica UNA vez por (enrollment, subject, period)
-// (no se duplica la nota de Matemáticas-trimestre-1 para el mismo alumno)
+// Una materia solo se califica UNA vez por (enrollment, subject_id,
+// gradingPeriod) — no se duplica la nota de Matemáticas-trimestre-1 para el
+// mismo alumno. Sustituye a `uniq_enrollment_subject_period`, que indexaba los
+// campos `period` y `subject` ya eliminados. Mongoose crea los índices nuevos
+// pero NUNCA borra los viejos: los dropean las migraciones.
 gradeSchema.index(
-  { enrollment_id: 1, subject: 1, period: 1 },
-  { unique: true, name: "uniq_enrollment_subject_period" }
+  { enrollment_id: 1, subject_id: 1, gradingPeriod: 1 },
+  { unique: true, name: "uniq_enrollment_subject_id_grading_period" }
 );
 // Búsquedas por materia dentro de una escuela
-gradeSchema.index({ school: 1, subject: 1, school_year_id: 1 });
-// Búsquedas por enrollment (para "ver notas de un alumno")
-gradeSchema.index({ enrollment_id: 1, period: 1 });
+gradeSchema.index({ school: 1, subject_id: 1, school_year_id: 1 });
+// Búsquedas por enrollment ("ver notas de un alumno"), ya ordenadas por
+// período gracias al campo desnormalizado.
+gradeSchema.index({ enrollment_id: 1, period_order: 1 });
 
 const Grade = model("Grade", gradeSchema);
 

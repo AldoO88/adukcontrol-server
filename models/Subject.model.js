@@ -1,11 +1,12 @@
 // Modelo de Materia (Subject)
-// Catálogo de materias que ofrece una escuela. Usado para tipar las
-// calificaciones y asignar maestros a grupos específicos.
+// Catálogo de materias que ofrece una escuela. Es la ÚNICA fuente de verdad
+// del nombre de una materia: `Grade.subject_id`, `TeacherSubject.subject_id` y
+// `ClassSchedule.subject_id` apuntan todos aquí.
 //
-// Las "materias" se almacenan como string libre en Grade.subject por
-// compatibilidad con datos existentes. Este modelo es el catálogo oficial:
-// si una materia existe acá, su nombre es el "canónico" (y los maestros
-// solo pueden calificar materias que tienen un TeacherSubject asignado).
+// Antes las materias se guardaban como String libre en Grade.subject y
+// TeacherSubject.subject, lo que permitía que "Matemáticas", "matematicas" y
+// "Mate" convivieran como materias distintas y rompía los promedios por
+// materia. Migrado con scripts/migrate-subjects-to-refs.js.
 const { Schema, model } = require("mongoose");
 
 const subjectSchema = new Schema(
@@ -66,6 +67,10 @@ subjectSchema.index(
   { school: 1, code: 1 },
   { unique: true, name: "uniq_school_subject_code" }
 );
+// Búsqueda por nombre dentro de la escuela. NO es unique a propósito: los
+// datos existentes pueden traer nombres repetidos y un unique reventaría la
+// migración. Deduplicar el catálogo es una tarea aparte, manual.
+subjectSchema.index({ school: 1, name: 1 }, { name: "idx_school_subject_name" });
 
 const Subject = model("Subject", subjectSchema);
 

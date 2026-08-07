@@ -151,8 +151,9 @@ const getAllStudents = async (req, res, next) => {
       filter.$or = [
         { first_name: regex },
         { last_name: regex },
-        { enrollment_number: regex },
+        { controlNumber: regex },
         { rfid_card: regex },
+        { biometricId: regex },
       ];
     }
 
@@ -736,7 +737,7 @@ const getStudentAcademicHistory = async (req, res, next) => {
     res.status(200).json({
       student: {
         _id: student._id,
-        enrollment_number: student.enrollment_number,
+        controlNumber: student.controlNumber,
         first_name: student.first_name,
         last_name: student.last_name,
         status: student.status,

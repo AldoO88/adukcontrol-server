@@ -165,7 +165,7 @@ const getGroupStudents = async (req, res, next) => {
 
     // Buscar todas las Enrollments de este grupo
     const enrollments = await Enrollment.find({ group_id: groupId })
-      .populate("student_id", "enrollment_number first_name last_name status photoUrl current_group_id")
+      .populate("student_id", "controlNumber first_name last_name status photoUrl current_group_id")
       .populate("school_year_id", "name startDate endDate isActive")
       .sort({ createdAt: -1 });
 

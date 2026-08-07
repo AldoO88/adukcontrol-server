@@ -1,10 +1,34 @@
 // Controlador de Inscripciones
 // Operaciones CRUD sobre el recurso Enrollment, con aislamiento multi-tenant.
+//
+// Sincronización con Student.current_group_id:
+// Al crear/actualizar un enrollment del ciclo ACTIVO de la escuela, se
+// actualiza también el campo denormalizado Student.current_group_id.
+// Esto evita inconsistencias entre Enrollment (fuente de verdad) y el
+// campo cacheado en Student (usado por el filtro ?group=X de GET /students
+// y por varios populates del dashboard).
 const mongoose = require("mongoose");
 const Enrollment = require("../models/Enrollment.model");
+const Student = require("../models/Student.model");
+const School = require("../models/School.model");
 
 const tenantFilter = (req) =>
   req.payload.role === "super_admin" ? {} : { school: req.payload.schoolId };
+
+// Helper: sincroniza el cache Student.current_group_id SOLO si el enrollment
+// pertenece al ciclo activo de la escuela. Es idempotente.
+// - Si el enrollment es de un ciclo pasado o futuro, NO toca current_group_id
+//   (preserva el valor del año activo, que es lo que el campo representa).
+// - Si la escuela no tiene ciclo activo configurado, no hace nada.
+const syncStudentCurrentGroup = async (studentId, groupId, schoolYearId, schoolId) => {
+  if (!studentId || !groupId || !schoolYearId || !schoolId) return;
+  const school = await School.findById(schoolId)
+    .select("current_school_year_id")
+    .lean();
+  if (!school) return;
+  if (String(school.current_school_year_id) !== String(schoolYearId)) return;
+  await Student.findByIdAndUpdate(studentId, { current_group_id: groupId });
+};
 
 // GET /api/enrollments
 const getAllEnrollments = async (req, res, next) => {
@@ -24,7 +48,7 @@ const getAllEnrollments = async (req, res, next) => {
     if (cycle_status) filter.cycle_status = cycle_status;
 
     const enrollments = await Enrollment.find(filter)
-      .populate("student_id", "enrollment_number first_name last_name")
+      .populate("student_id", "controlNumber first_name last_name")
       .populate("group_id", "grade section school_year_id")
       .populate("school_year_id", "name startDate endDate isActive")
       .sort({ createdAt: -1 });
@@ -36,6 +60,7 @@ const getAllEnrollments = async (req, res, next) => {
 };
 
 // POST /api/enrollments
+// Crea una inscripción y sincroniza Student.current_group_id si aplica.
 const createEnrollment = async (req, res, next) => {
   try {
     const isSuperAdmin = req.payload.role === "super_admin";
@@ -52,6 +77,15 @@ const createEnrollment = async (req, res, next) => {
     }
 
     const newEnrollment = await Enrollment.create(payload);
+
+    // Sincronizar el cache denormalizado (solo si es del ciclo activo)
+    await syncStudentCurrentGroup(
+      newEnrollment.student_id,
+      newEnrollment.group_id,
+      newEnrollment.school_year_id,
+      newEnrollment.school
+    );
+
     res.status(201).json(newEnrollment);
   } catch (error) {
     next(error);
@@ -73,7 +107,7 @@ const getEnrollmentById = async (req, res, next) => {
       _id: enrollmentId,
       ...tenantFilter(req),
     })
-      .populate("student_id", "enrollment_number first_name last_name")
+      .populate("student_id", "controlNumber first_name last_name")
       .populate("group_id", "grade section school_year_id")
       .populate("school_year_id", "name startDate endDate isActive");
 
@@ -90,6 +124,8 @@ const getEnrollmentById = async (req, res, next) => {
 };
 
 // PUT /api/enrollments/:enrollmentId
+// Actualiza una inscripción. Si cambió el group_id o el school_year_id,
+// re-sincroniza Student.current_group_id.
 const updateEnrollment = async (req, res, next) => {
   try {
     const { enrollmentId } = req.params;
@@ -116,6 +152,16 @@ const updateEnrollment = async (req, res, next) => {
         .json({ message: `No enrollment with id: ${enrollmentId}` });
     }
 
+    // Si cambió el group o el ciclo, re-sincronizar el cache
+    if (req.body.group_id !== undefined || req.body.school_year_id !== undefined) {
+      await syncStudentCurrentGroup(
+        updated.student_id,
+        updated.group_id,
+        updated.school_year_id,
+        updated.school
+      );
+    }
+
     res.status(200).json(updated);
   } catch (error) {
     next(error);
@@ -123,6 +169,9 @@ const updateEnrollment = async (req, res, next) => {
 };
 
 // DELETE /api/enrollments/:enrollmentId
+// Borra la inscripción. NO tocamos Student.current_group_id — si era del
+// ciclo activo, queda con un group_id que ya no tiene Enrollment (caso
+// raro, se resuelve reinscribiendo o promoviendo al alumno).
 const deleteEnrollment = async (req, res, next) => {
   try {
     const { enrollmentId } = req.params;
