@@ -26,6 +26,18 @@ const groupSchema = new Schema(
       trim: true,
       uppercase: true,
     },
+    // Tipo de grupo: "regular" (grupo de origen, secciones A-D) o "taller"
+    // (grupo transversal de Tecnología que mezcla alumnos de varios grupos
+    // de origen del mismo grado). Los talleres se eligen una sola vez al
+    // entrar a primer grado y se conservan en los ciclos siguientes.
+    type: {
+      type: String,
+      enum: {
+        values: ["regular", "taller"],
+        message: "type must be: regular or taller",
+      },
+      default: "regular",
+    },
     school_year_id: {
       type: Schema.Types.ObjectId,
       ref: "SchoolYear",

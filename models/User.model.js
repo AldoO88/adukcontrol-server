@@ -1,16 +1,16 @@
-// Modelo de Usuario
-// Define el esquema de los usuarios del sistema:
+// User Model
+// Defines the schema for system users:
 //   - Staff (super_admin, admin, principal, registrar, teacher, prefect, social_worker):
-//     se loguean con email + password. Su escuela se fija al crearlos.
-//   - Tutor (padre/madre/guardián): se pre-registra con phoneNumber y se activa
-//     por SMS (OTP). Una vez activado, se loguea con phoneNumber + password.
-// Regla multi-tenant: cada usuario pertenece a UNA escuela, salvo super_admin.
-const { Schema, model } = require("mongoose"); // Constructores de Mongoose
-const bcrypt = require("bcryptjs"); // Hashing de contraseñas y OTP
+//     login with email + password. Their school is set upon creation.
+//   - Tutor (parent/guardian): pre-registers with phoneNumber and is activated
+//     via SMS (OTP). Once activated, logs in with phoneNumber + password.
+// Multi-tenant rule: each user belongs to ONE school, except super_admin.
+const { Schema, model } = require("mongoose"); // Mongoose constructors
+const bcrypt = require("bcryptjs"); // Password and OTP hashing
 
 const userSchema = new Schema(
   {
-    // Referencia a la escuela (tenant) — obligatoria salvo para super_admin
+    // School (tenant) reference — required except for super_admin
     school: {
       type: Schema.Types.ObjectId,
       ref: "School",
@@ -20,15 +20,15 @@ const userSchema = new Schema(
       index: true,
       default: null,
     },
-    // Nombre a mostrar del usuario (primer nombre o nombre de pila)
+    // Display name of the user (first name or given name)
     name: {
       type: String,
       required: [true, "Name is required."],
       trim: true,
     },
-    // Apellido del usuario. Requerido salvo para super_admin (bootstrap
-    // inicial del sistema). Usado por el dashboard del tutor para construir
-    // el saludo "Hola, <name> <last_name>".
+    // User's last name. Required except for super_admin (initial system
+    // bootstrap). Used by the tutor dashboard to build the greeting
+    // "Hello, <name> <last_name>".
     last_name: {
       type: String,
       required: function () {
@@ -37,8 +37,8 @@ const userSchema = new Schema(
       default: null,
       trim: true,
     },
-    // Email del usuario (opcional). El login es por phoneNumber, pero el email
-    // puede servir para notificaciones, recuperación u otros flujos futuros.
+    // User's email (optional). Login is by phoneNumber, but email
+    // can be used for notifications, recovery, or other future flows.
     email: {
       type: String,
       lowercase: true,
@@ -48,60 +48,82 @@ const userSchema = new Schema(
         "Please provide a valid email address.",
       ],
     },
-    // Número de celular a 10 dígitos (formato MX, sin código de país).
-    // Identificador universal de login y de contacto para OTP.
-    // Requerido para TODOS los roles.
+    // 10-digit cell phone number (MX format, no country code).
+    // Universal login identifier and OTP contact method.
+    // Required for ALL roles.
     phoneNumber: {
       type: String,
       required: [true, "Phone number is required."],
       match: [/^\d{10}$/, "Phone number must be 10 digits."],
       trim: true,
     },
-    // Contraseña hasheada con bcrypt. Para tutor es null hasta que active la cuenta.
+    // Password hashed with bcrypt. For tutor it's null until account is activated.
     password: {
       type: String,
       required: false,
       minlength: [8, "Password must be at least 8 characters long."],
       select: false,
     },
-    // Rol de autorización
+    // Authorization role
     role: {
       type: String,
       required: [true, "Role is required."],
       enum: {
         values: [
           "super_admin",    // Cross-tenant
-          "admin",          // Administrador de su escuela
-          "principal",      // Dirección escolar
-          "registrar",      // Control escolar
-          "teacher",        // Maestro
-          "prefect",        // Prefecto
-          "social_worker",  // Trabajo social
-          "tutor",          // Padre/madre/guardián (cuenta separada, login por celular)
+          "admin",          // School administrator
+          "principal",      // School principal
+          "registrar",      // School registrar
+          "teacher",        // Teacher
+          "prefect",        // Prefect
+          "social_worker",  // Social worker
+          "tutor",          // Parent/guardian (separate account, phone login)
         ],
         message:
           "Role must be one of: super_admin, admin, principal, registrar, teacher, prefect, social_worker, tutor.",
       },
     },
-    // Bandera de activación. Staff: true por defecto. Tutor: false hasta activar por OTP.
+    // Activation flag. Staff: true by default. Tutor: false until activated via OTP.
     isActive: {
       type: Boolean,
       default: function () {
         return this.role === "super_admin";
       },
     },
-    // OTP temporal (hasheado con bcrypt). Solo presente durante el flujo de activación.
-    // Nunca se devuelve en queries por defecto.
+    // Temporary OTP (hashed with bcrypt). Only present during activation flow.
+    // Never returned in default queries.
     otpCode: {
       type: String,
       select: false,
       default: null,
     },
-    // Fecha de expiración del OTP. Típicamente now + 10 min.
+    // OTP expiration date. Typically now + 10 min.
     otpExpiresAt: {
       type: Date,
       select: false,
       default: null,
+    },
+    // Weekly contracted hours of the teacher (HSM - Horas Semana Mes).
+    // Represents the hours assigned in the teacher's contract.
+    // Applicable only for "teacher" role users.
+    contractedHours: {
+      type: Number,
+      default: 0,
+      min: [0, "Contracted hours cannot be negative."],
+      max: [50, "Contracted hours cannot exceed 50."],
+    },
+    // Teacher appointment type.
+    // "BASE" = Permanent position (plaza base)
+    // "INTERINATO" = Temporary substitution (interim)
+    // "HONORARIOS" = Contract-based (honorarios)
+    // "OTHER" = Other appointment type
+    appointmentType: {
+      type: String,
+      enum: {
+        values: ["BASE", "INTERINATO", "HONORARIOS", "OTHER"],
+        message: "appointmentType must be BASE, INTERINATO, HONORARIOS, or OTHER.",
+      },
+      default: "BASE",
     },
   },
   {
@@ -110,7 +132,7 @@ const userSchema = new Schema(
   }
 );
 
-// Email único por escuela (staff). Se excluyen tutores (email null) y super_admins (school null).
+// Unique email per school (staff). Tutors (email null) and super_admins (school null) are excluded.
 userSchema.index(
   { school: 1, email: 1 },
   {
@@ -122,7 +144,7 @@ userSchema.index(
     },
   }
 );
-// Email único para super_admins (school null)
+// Unique email for super_admins (school null)
 userSchema.index(
   { email: 1 },
   {
@@ -131,7 +153,7 @@ userSchema.index(
     partialFilterExpression: { school: null },
   }
 );
-// phoneNumber único por escuela (solo tutores tienen phoneNumber)
+// Unique phoneNumber per school (only tutors have phoneNumber)
 userSchema.index(
   { school: 1, phoneNumber: 1 },
   {
@@ -142,8 +164,8 @@ userSchema.index(
 );
 userSchema.index({ role: 1, isActive: 1 });
 
-// Hook pre-save: hashea password o OTP si fueron modificados.
-// Si password es null/empty (tutor no activado), no intenta hashear.
+// Pre-save hook: hashes password or OTP if modified.
+// If password is null/empty (tutor not activated), skips hashing.
 userSchema.pre("save", async function hashSecrets(next) {
   try {
     if (this.isModified("password") && this.password) {
@@ -160,14 +182,14 @@ userSchema.pre("save", async function hashSecrets(next) {
   }
 });
 
-// Compara una contraseña en texto plano contra el hash.
-// Devuelve false si el usuario no tiene password (tutor no activado).
+// Compares a plain text password against the hash.
+// Returns false if the user has no password (tutor not activated).
 userSchema.methods.comparePassword = function comparePassword(candidate) {
   if (!this.password) return Promise.resolve(false);
   return bcrypt.compare(candidate, this.password);
 };
 
-// Compara un OTP en texto plano contra el hash almacenado.
+// Compares a plain text OTP against the stored hash.
 userSchema.methods.compareOtp = function compareOtp(candidate) {
   if (!this.otpCode) return Promise.resolve(false);
   return bcrypt.compare(candidate, this.otpCode);

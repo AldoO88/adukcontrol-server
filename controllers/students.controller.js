@@ -612,6 +612,30 @@ const promoteStudent = async (req, res, next) => {
 
     // Actualizar el current_group_id del student
     student.current_group_id = new_group_id;
+
+    // Preservar el taller elegido: el alumno conserva el MISMO taller (p.ej.
+    // OFIMÁTICA) en el nuevo grado/ciclo. Se re-apunta workshop_group_id al
+    // grupo taller del nuevo ciclo con el mismo nombre de sección.
+    if (student.workshop_group_id) {
+      const oldWorkshop = await Group.findOne({
+        _id: student.workshop_group_id,
+        school: student.school,
+        type: "taller",
+      }).select("section");
+      if (oldWorkshop) {
+        const newWorkshop = await Group.findOne({
+          school: student.school,
+          school_year_id: targetYearId,
+          grade: newGroup.grade,
+          section: oldWorkshop.section,
+          type: "taller",
+        }).select("_id");
+        if (newWorkshop) {
+          student.workshop_group_id = newWorkshop._id;
+        }
+      }
+    }
+
     await student.save();
 
     // Devolver el student actualizado con su nuevo grupo

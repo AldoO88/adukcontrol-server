@@ -771,11 +771,22 @@ const getMyStudentSchedule = async (req, res, next) => {
       });
     }
 
-    // 2. Buscar los ClassSchedule del grupo para este ciclo
+    // 1b. Obtener el grupo TALLER del estudiante (Grupo transversal de Tecnología).
+    //     Su horario se carga aparte y se FUSIONA con el del grupo de origen:
+    //     en los bloques de taller el alumno sale de su grupo de origen y asiste
+    //     a su taller, así que sin esto el horario mostraría huecos.
+    const student = await Student.findOne({ _id: studentId, school: req.school }).lean();
+
+    // 2. Buscar los ClassSchedule del grupo (de origen) y del taller para este ciclo
+    const groupIds = [group._id];
+    if (student && student.workshop_group_id) {
+      groupIds.push(student.workshop_group_id);
+    }
+
     const schedules = await ClassSchedule.find({
       school: req.school,
       school_year_id: schoolYear._id,
-      group_id: group._id,
+      group_id: { $in: groupIds },
       isActive: true,
     })
       .populate("subject_id", "code name")
@@ -788,6 +799,12 @@ const getMyStudentSchedule = async (req, res, next) => {
     for (const cs of schedules) {
       const shift = cs.school_shift_id;
       if (!shift || !cs.scheduleSlots) continue;
+
+      // Marcar si la sesión pertenece al grupo taller del estudiante
+      const isTaller =
+        student &&
+        student.workshop_group_id &&
+        String(cs.group_id) === String(student.workshop_group_id);
 
       for (const slot of cs.scheduleSlots) {
         const day = slot.dayOfWeek;
@@ -813,16 +830,42 @@ const getMyStudentSchedule = async (req, res, next) => {
           classroom: slot.classroom || null,
           block_count: blocks.length,
           block_names: blocks.map((b) => b.name),
+          is_taller: isTaller || false,
         });
       }
     }
 
-    // 4. Ordenar cada día por hora de inicio
+    // 4. Inyectar el/los receso(s) de la campana (SchoolShift con isBreak: true)
+    //    en cada día con clases, para que el front lo muestre como fila aparte.
+    const breakBlocks = schedules[0]?.school_shift_id?.timeBlocks
+      ? schedules[0].school_shift_id.timeBlocks.filter((b) => b.isBreak)
+      : [];
+    if (breakBlocks.length > 0) {
+      for (const day of Object.keys(scheduleByDay)) {
+        for (const br of breakBlocks) {
+          scheduleByDay[day].push({
+            type: "receso",
+            subject_id: null,
+            subject: null,
+            subject_code: null,
+            teacher: null,
+            start: br.startTime,
+            end: br.endTime,
+            classroom: null,
+            block_count: 0,
+            block_names: [br.name],
+            is_taller: false,
+          });
+        }
+      }
+    }
+
+    // 5. Ordenar cada día por hora de inicio
     for (const day of Object.keys(scheduleByDay)) {
       scheduleByDay[day].sort((a, b) => a.start.localeCompare(b.start));
     }
 
-    // 5. Agregar los nombres de día para el front
+    // 6. Agregar los nombres de día para el front
     const scheduleWithDays = {};
     for (const [day, classes] of Object.entries(scheduleByDay)) {
       scheduleWithDays[day] = {
@@ -841,7 +884,12 @@ const getMyStudentSchedule = async (req, res, next) => {
         grade: group.grade,
         section: group.section,
         shift: group.shift,
+        type: group.type || "regular",
       },
+      taller_group:
+        student && student.workshop_group_id
+          ? { _id: student.workshop_group_id }
+          : null,
       shift_info: schedules.length > 0 && schedules[0].school_shift_id
         ? {
             name: schedules[0].school_shift_id.name,

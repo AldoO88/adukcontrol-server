@@ -89,10 +89,22 @@ const createGrade = async (req, res, next) => {
     // Si el usuario es teacher, validar que tenga TeacherSubject para
     // esta (subject, group, school_year). Admin/registrar/super_admin bypassean.
     if (req.payload.role === "teacher") {
+      // El grupo puede ser el de origen (grupos regulares) o el taller
+      // (Student.workshop_group_id) cuando la materia se imparte en un grupo
+      // transversal (Tecnología). Resolvemos ambos para que el maestro de
+      // taller pueda calificar a sus alumnos mezclados.
+      const student = await mongoose
+        .model("Student")
+        .findOne({ _id: studentId, ...tenantFilter(req) })
+        .select("workshop_group_id");
+      const groupCandidates = [enrollment.group_id];
+      if (student && student.workshop_group_id) {
+        groupCandidates.push(student.workshop_group_id);
+      }
       const assignment = await TeacherSubject.findOne({
         teacher_id: req.payload._id,
         subject_id,
-        group_id: enrollment.group_id,
+        group_id: { $in: groupCandidates },
         school_year_id: enrollment.school_year_id._id,
       });
       if (!assignment) {

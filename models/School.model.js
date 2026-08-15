@@ -1,47 +1,60 @@
-// Modelo de Escuela (Tenant)
-// Representa una escuela cliente del SaaS. En la arquitectura multi-tenant,
-// cada escuela aísla sus propios datos: User, Student, AttendanceLog,
-// Enrollment, Group, etc. pertenecen a una sola escuela.
-// Regla de oro: ninguna consulta debe devolver datos de otra escuela.
+// School Model (Tenant)
+// Represents a client school of the SaaS. In the multi-tenant architecture,
+// each school isolates its own data: User, Student, AttendanceLog,
+// Enrollment, Group, etc. belong to a single school.
+// Golden rule: no query should return data from another school.
 const { Schema, model } = require("mongoose");
 
 const schoolSchema = new Schema(
   {
-    // Nombre comercial u oficial de la escuela
+    // Official or commercial name of the school
     name: {
       type: String,
       required: [true, "School name is required."],
       trim: true,
     },
-    // URL pública del logotipo (opcional; null hasta que se suba).
-    // Se actualiza vía POST /api/schools/:schoolId/logo.
+    // Public URL of the logo (optional; null until uploaded).
+    // Updated via POST /api/schools/:schoolId/logo.
     logoUrl: {
       type: String,
       default: null,
       trim: true,
     },
-    // Clave de Centro de Trabajo (CCT) — identificador oficial ante la SEP.
-    // Único en todo el sistema, sin importar la escuela.
+    // Work Center Key (CCT) — official identifier from SEP.
+    // Unique across the entire system, regardless of school.
     cct: {
       type: String,
       required: [true, "CCT is required."],
-      unique: true, // Garantiza unicidad global de la CCT
+      unique: true, // Guarantees global CCT uniqueness
       trim: true,
-      uppercase: true, // Normalizar a mayúsculas
+      uppercase: true, // Normalize to uppercase
     },
-    // Bandera de activación: permite dar de baja lógica sin eliminar el tenant
+    // Activation flag: allows logical deactivation without deleting the tenant
     isActive: {
       type: Boolean,
       default: true,
     },
-    // Ciclo escolar actual de la escuela (referencia a SchoolYear). Se
-    // sincroniza automáticamente vía POST /api/school-years/:id/activate.
-    // El dashboard y los listados usan este campo para saber "qué año corre
-    // ahora" sin tener que consultar SchoolYear por isActive.
+    // Current school year of the school (reference to SchoolYear). It is
+    // synchronized automatically via POST /api/school-years/:id/activate.
+    // The dashboard and listings use this field to know "which year is current"
+    // without having to query SchoolYear by isActive.
     current_school_year_id: {
       type: Schema.Types.ObjectId,
       ref: "SchoolYear",
       default: null,
+    },
+    // Educational levels offered by the school.
+    // "BASIC" = Basic Education (NEM: Secondary)
+    // "UPPER_SECONDARY" = Upper Secondary Education (MCCEMS: High School)
+    // "HIGHER" = Higher Education (University)
+    educationalLevels: {
+      type: [String],
+      enum: {
+        values: ["BASIC", "UPPER_SECONDARY", "HIGHER"],
+        message: "educationalLevel must be BASIC, UPPER_SECONDARY, or HIGHER.",
+      },
+      default: ["BASIC"],
+      required: [true, "Educational levels are required."],
     },
   },
   {
@@ -50,8 +63,8 @@ const schoolSchema = new Schema(
   }
 );
 
-// cct ya cuenta con índice por unique:true.
-// Agregamos índice por isActive para filtrar escuelas activas rápidamente.
+// cct already has an index via unique:true.
+// We add an index on isActive to quickly filter active schools.
 schoolSchema.index({ isActive: 1 });
 
 const School = model("School", schoolSchema);

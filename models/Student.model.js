@@ -115,6 +115,16 @@ const studentSchema = new Schema(
       ref: "Group",
       default: null,
     },
+    // Taller (grupo de Tecnología) al que pertenece el alumno. Se elige UNA
+    // sola vez al ingresar a primer grado (puede cambiar si se reasigna).
+    // Es un grupo `type: "taller"` que mezcla alumnos de varios grupos de
+    // origen del mismo grado. Al promover, el controller re-apunta este campo
+    // al grupo taller del MISMO taller en el nuevo grado/ciclo.
+    workshop_group_id: {
+      type: Schema.Types.ObjectId,
+      ref: "Group",
+      default: null,
+    },
     status: {
       type: String,
       enum: {
@@ -305,6 +315,7 @@ studentSchema.index(
 );
 
 studentSchema.index({ current_group_id: 1 });
+studentSchema.index({ workshop_group_id: 1 });
 studentSchema.index({ last_name: 1, first_name: 1 });
 studentSchema.index({ guardians: 1 });
 // Nota: el índice de fcm_token ahora vive en Guardian.model.js sobre guardian.fcm_token
