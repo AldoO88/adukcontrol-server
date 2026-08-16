@@ -82,6 +82,12 @@ const citationSchema = new Schema(
       type: Date,
       required: [true, "scheduledDate is required."],
     },
+    // Lugar físico donde se presentará el tutor (ej. Taller de Ofimática, Dirección, etc.)
+      location: {
+        type: String,
+        required: [true, "location is required."],
+        trim: true,
+      },
     // Tipo de citatorio. Útil para filtrar y para elegir la plantilla
     // del mensaje que se envía al tutor.
     type: {
@@ -110,7 +116,7 @@ const citationSchema = new Schema(
       type: String,
       required: [true, "status is required."],
       enum: {
-        values: ["pending", "confirmed", "completed", "no_show"],
+        values: ["pending", "confirmed", "completed", "no_show", "expired"],
         message: "status must be: pending, confirmed, completed or no_show.",
       },
       default: "pending",

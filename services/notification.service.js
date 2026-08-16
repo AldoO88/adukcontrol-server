@@ -318,7 +318,9 @@ const sendCitationNotification = async (citation) => {
 
   const payload = {
     title: `Citatorio: ${studentName}`,
-    body: `${typeLabel} - ${dateStr}. ${citation.reason}`,
+    body: `${typeLabel} - ${dateStr}. ${citation.reason}${
+      citation.location ? ` · Lugar: ${citation.location}` : ""
+    }`,
     channelId: "eduk_citations_channel",
     data: {
       kind: "citation",

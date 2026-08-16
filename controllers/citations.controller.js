@@ -136,6 +136,7 @@ const populateCitation = (query) =>
 //     student:       ObjectId (required)
 //     scheduledDate: ISO date (required)
 //     type:          "academic" | "behavioral" | "administrative" (required)
+//     location:      string, max 200 chars (required)
 //     reason:        string, max 1000 chars (required)
 //     schoolYear:    ObjectId (default al ciclo activo)
 //     school:        ObjectId (solo super_admin; default su JWT schoolId)
@@ -143,8 +144,14 @@ const populateCitation = (query) =>
 const createCitation = async (req, res, next) => {
   try {
     const isSuperAdmin = req.payload.role === "super_admin";
-    const { student: studentId, scheduledDate, type, reason, schoolYear } =
-      req.body;
+    const {
+      student: studentId,
+      scheduledDate,
+      type,
+      reason,
+      schoolYear,
+      location,
+    } = req.body;
 
     // 1) School.
     const school = isSuperAdmin ? req.body.school : req.payload.schoolId;
@@ -233,6 +240,17 @@ const createCitation = async (req, res, next) => {
         .json({ message: "reason must be at most 1000 characters." });
     }
 
+    // 7b) Validar location.
+    if (!location || !String(location).trim()) {
+      return res.status(400).json({ message: "location is required." });
+    }
+    const locationTrim = String(location).trim();
+    if (locationTrim.length > 200) {
+      return res
+        .status(400)
+        .json({ message: "location must be at most 200 characters." });
+    }
+
     // 8) Validar el alcance del teacher (si aplica).
     if (req.payload.role === "teacher") {
       const scopeCheck = await validateTeacherScopeForStudent(
@@ -254,6 +272,7 @@ const createCitation = async (req, res, next) => {
       creator: req.payload._id,
       scheduledDate: scheduledDateObj,
       type,
+      location: locationTrim,
       reason: reasonTrim,
       status: "pending",
     });

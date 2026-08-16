@@ -1953,6 +1953,7 @@ const getMyAnnouncements = async (req, res, next) => {
         _id: c._id,
         kind: "citation",
         type: c.type, // "academic" | "behavioral" | "administrative"
+        location: c.location,
         reason: c.reason,
         scheduledDate: c.scheduledDate,
         status: c.status, // "pending" | "confirmed"
