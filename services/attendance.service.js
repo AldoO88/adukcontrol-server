@@ -7,6 +7,8 @@
 // notificación push en segundo plano.
 const AttendanceLog = require("../models/AttendanceLog.model");
 const Guardian = require("../models/Guardian.model");
+const Group = require("../models/Group.model");
+const SchoolShift = require("../models/SchoolShift.model");
 const notificationService = require("./notification.service");
 const cache = require("./cache.service");
 
@@ -100,6 +102,58 @@ const dispatchNotificationInBackground = (student, attendanceLog) => {
   });
 };
 
+// "HH:mm" → minutos desde medianoche. Helper local para no acoplar al modelo.
+const toMinutes = (hhmm) => {
+  if (typeof hhmm !== "string" || !/^([01]\d|2[0-3]):([0-5]\d)$/.test(hhmm))
+    return null;
+  const [h, m] = hhmm.split(":").map(Number);
+  return h * 60 + m;
+};
+
+// Calcula el status de una entrada comparando la hora del evento con la
+// hora de inicio del turno del grupo del alumno.
+//   on_time → eventMinutes ≤ shiftMinutes
+//   late    → eventMinutes >  shiftMinutes
+//   null    → no se pudo resolver (sin grupo, sin turno, etc.)
+const computeEntryStatus = async (student, eventTime) => {
+  try {
+    if (!student.current_group_id) return null;
+
+    const group = await Group.findById(student.current_group_id)
+      .select("shift school_year_id school")
+      .lean();
+    if (!group) return null;
+
+    const shift = await SchoolShift.findOne({
+      school: group.school,
+      school_year_id: group.school_year_id,
+      shift: group.shift,
+    })
+      .select("startTime")
+      .lean();
+    if (!shift) return null;
+
+    const shiftMinutes = toMinutes(shift.startTime);
+    if (shiftMinutes === null) return null;
+
+    // Convertir event_time (UTC) a hora local usando ADMS_TZ_OFFSET_MINUTES.
+    // Si no está configurado, se usa 0 (asume server y escuela en misma zona).
+    const offset = parseInt(
+      process.env.ADMS_TZ_OFFSET_MINUTES || "0",
+      10
+    );
+    const localDate = new Date(eventTime.getTime() + offset * 60000);
+    const eventMinutes = localDate.getUTCHours() * 60 + localDate.getUTCMinutes();
+
+    return eventMinutes <= shiftMinutes ? "on_time" : "late";
+  } catch (err) {
+    console.warn(
+      `[attendance] computeEntryStatus failed for student ${student._id}: ${err.message}`
+    );
+    return null;
+  }
+};
+
 // Registra un evento de asistencia completo.
 // El `school` se desnormaliza desde el estudiante (el caller ya validó que
 // exista) para acelerar las queries tenant-scoped.
@@ -119,6 +173,12 @@ const registerAttendanceEvent = async ({
 
   const eventType = await determineNextType(student._id);
 
+  // Computar status solo para entry events (comparar con shift startTime)
+  let status = null;
+  if (eventType === "entry") {
+    status = await computeEntryStatus(student, eventTime);
+  }
+
   const log = await AttendanceLog.create({
     school: student.school,
     student_id: student._id,
@@ -127,6 +187,7 @@ const registerAttendanceEvent = async ({
     device,
     verificationMode,
     snapshotUrl,
+    status,
   });
 
   await invalidateGuardianCaches(student);
@@ -135,10 +196,29 @@ const registerAttendanceEvent = async ({
   return { log, eventType, duplicate: false };
 };
 
+// Registra una ausencia manual (sin marcación del dispositivo).
+// Crea un log con event_type "entry", status "absent", y verificationMode "MANUAL".
+const registerAbsence = async ({ student, eventTime, device = "manual@system" }) => {
+  const log = await AttendanceLog.create({
+    school: student.school,
+    student_id: student._id,
+    event_time: eventTime,
+    event_type: "entry",
+    device,
+    verificationMode: "MANUAL",
+    status: "absent",
+  });
+
+  await invalidateGuardianCaches(student);
+  return log;
+};
+
 module.exports = {
   determineNextType,
   findRecentDuplicate,
   invalidateGuardianCaches,
   dispatchNotificationInBackground,
   registerAttendanceEvent,
+  registerAbsence,
+  computeEntryStatus,
 };

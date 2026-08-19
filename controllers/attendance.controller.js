@@ -25,9 +25,67 @@ const resolveVerificationMode = (deviceType) =>
 // se puede obtener del estudiante (ya validado que pertenezca a una escuela activa).
 const deviceTriggerController = async (req, res, next) => {
   try {
-    const { identifier, device_type, device_id, event_time, snapshot_url } =
-      req.body;
+    const {
+      identifier,
+      device_type,
+      device_id,
+      event_time,
+      snapshot_url,
+      status: manualStatus,
+      student_id: manualStudentId,
+    } = req.body;
 
+    // === Modo ausencia manual ===
+    // Si se envía status: "absent", se crea un log de ausencia sin buscar
+    // el student por identifier (se usa student_id del body directamente).
+    if (manualStatus === "absent") {
+      if (!manualStudentId || !mongoose.Types.ObjectId.isValid(manualStudentId)) {
+        return res
+          .status(400)
+          .json({ message: "student_id is required when status is 'absent'." });
+      }
+      const student = await Student.findOne({
+        _id: manualStudentId,
+        status: "active",
+      }).select("_id school controlNumber first_name last_name");
+      if (!student) {
+        return res
+          .status(404)
+          .json({ message: `No active student with id '${manualStudentId}'.` });
+      }
+      if (!student.school) {
+        return res
+          .status(500)
+          .json({ message: "Student has no school assigned. Contact support." });
+      }
+
+      const eventTimeDate = event_time ? new Date(event_time) : new Date();
+      if (event_time && Number.isNaN(eventTimeDate.getTime())) {
+        return res
+          .status(400)
+          .json({ message: "event_time is not a valid ISO 8601 date." });
+      }
+
+      const log = await attendanceService.registerAbsence({
+        student,
+        eventTime: eventTimeDate,
+      });
+
+      return res.status(201).json({
+        log,
+        student: {
+          _id: student._id,
+          controlNumber: student.controlNumber,
+          first_name: student.first_name,
+          last_name: student.last_name,
+        },
+        event_type: "entry",
+        status: "absent",
+        duplicate: false,
+      });
+    }
+
+    // === Modo normal (dispositivo RFID/facial) ===
     const identifierUpper = String(identifier).toUpperCase().trim();
     // El biometricId se compara SIN uppercase: es el User ID literal de la
     // terminal facial (puede llevar ceros a la izquierda y no se normaliza).
@@ -97,7 +155,8 @@ const deviceTriggerController = async (req, res, next) => {
 // Auth: JWT. Filtra por la escuela del usuario (super_admin ve todas).
 const getAttendanceLogsController = async (req, res, next) => {
   try {
-    const { student_id, from, to, event_type, page = 1, limit = 50 } = req.query;
+    const { student_id, from, to, event_type, status, page = 1, limit = 50 } =
+      req.query;
 
     const filter = { ...tenantFilter(req) };
 
@@ -110,6 +169,10 @@ const getAttendanceLogsController = async (req, res, next) => {
 
     if (event_type && ["entry", "exit"].includes(event_type)) {
       filter.event_type = event_type;
+    }
+
+    if (status && ["on_time", "late", "absent"].includes(status)) {
+      filter.status = status;
     }
 
     if (from || to) {

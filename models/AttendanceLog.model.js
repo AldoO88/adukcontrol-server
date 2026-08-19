@@ -61,6 +61,22 @@ const attendanceLogSchema = new Schema(
       type: Boolean,
       default: false,
     },
+    // Status computado al crear un entry event comparando event_time con
+    // la hora de inicio del turno (SchoolShift.startTime) del grupo del
+    // alumno. Solo se setea en entry events:
+    //   on_time → hora del evento ≤ startTime del turno
+    //   late    → hora del evento > startTime del turno
+    //   absent  → registrado manualmente (sin marcación del dispositivo)
+    //   null    → exit events, registros legacy, o si no se pudo resolver el turno
+    status: {
+      type: String,
+      enum: {
+        values: ["on_time", "late", "absent"],
+        message: "status must be: on_time, late or absent.",
+      },
+      default: null,
+      index: true,
+    },
   },
   {
     timestamps: true,
