@@ -422,11 +422,64 @@ const sendAnnouncementNotification = async (announcement) => {
   return dispatchToGuardians(guardians, payload, "announcements");
 };
 
+// Notifica a los tutores de un estudiante sobre una ausencia marcada
+// automáticamente por el cronjob o manualmente por el admin.
+// Devuelve { dispatched, failed, tokens, invalidated } o { dispatched: 0, reason: "..." }.
+const sendAbsenceNotification = async (student, attendanceLog) => {
+  const guardians = await Guardian.find({
+    students: student._id,
+    school: student.school,
+  }).select("fcm_token phone name");
+
+  if (!guardians || guardians.length === 0) {
+    return { dispatched: 0, reason: "no_guardians" };
+  }
+
+  const fullName = `${student.first_name} ${student.last_name}`.trim();
+  const time = new Date(attendanceLog.event_time).toLocaleTimeString("en-US", {
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+
+  const statusLabel =
+    attendanceLog.status === "absent" ? "AUSENCIA" : "RETARDO";
+  const bodySuffix =
+    attendanceLog.status === "absent"
+      ? `fue marcado ausente a las ${time}.`
+      : `llegó tarde a las ${time}.`;
+
+  const payload = {
+    title: `${statusLabel}: ${fullName}`,
+    body: `${fullName} ${bodySuffix}`,
+    channelId: "eduk_attendance_channel",
+    data: {
+      kind: "absence",
+      event_type: attendanceLog.event_type,
+      status: attendanceLog.status,
+      student_id: String(student._id),
+      controlNumber: student.controlNumber,
+      event_time: String(attendanceLog.event_time),
+      log_id: String(attendanceLog._id),
+    },
+  };
+
+  const schoolTag = student.school
+    ? student.school.cct || String(student.school._id || student.school)
+    : "no-school";
+
+  console.log(
+    `[attendance][school=${schoolTag}] Dispatching ${statusLabel} for ${fullName} to ${guardians.length} guardian(s)`
+  );
+
+  return dispatchToGuardians(guardians, payload, "attendance");
+};
+
 module.exports = {
   initializeFirebase,
   isFirebaseReady,
   sendToTokens,
   sendAttendanceNotification,
+  sendAbsenceNotification,
   sendCitationNotification,
   sendAnnouncementNotification,
 };

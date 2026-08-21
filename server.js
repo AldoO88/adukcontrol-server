@@ -2,16 +2,19 @@
 // Levanta el listener HTTP, registra los manejadores de señales
 // (SIGTERM, SIGINT, uncaughtException) y gestiona el cierre limpio.
 const app = require("./app"); // Instancia de Express ya configurada
+const { startAbsenceCron, stopAbsenceCron } = require("./config/cron");
 
 const PORT = process.env.PORT || 5005;
 
 const server = app.listen(PORT, () => {
   console.log(`Server listening on http://localhost:${PORT}`);
+  startAbsenceCron();
 });
 
 // Cierre limpio: dejar de aceptar conexiones, cerrar pool de Mongo, salir.
 const shutdown = (signal) => {
   console.log(`\n${signal} received. Closing server gracefully...`);
+  stopAbsenceCron();
   server.close(async () => {
     try {
       const mongoose = require("mongoose");

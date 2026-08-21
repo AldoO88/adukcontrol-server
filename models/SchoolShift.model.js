@@ -140,6 +140,16 @@ const schoolShiftSchema = new Schema(
       type: [timeBlockSchema],
       default: [],
     },
+    // Minutos de tolerancia después de startTime para auto-marcar ausencias.
+    // Ej: 30 → a las 08:00 (startTime + 30min) se marcan como absent los
+    // alumnos que no han pasado por el lector. El cronjob usa este valor
+    // para calcular el cutoff de cada turno.
+    gracePeriodMinutes: {
+      type: Number,
+      default: 30,
+      min: [0, "gracePeriodMinutes must be at least 0."],
+      max: [120, "gracePeriodMinutes must be at most 120."],
+    },
     // Soft delete: un turno con horarios históricos no se borra, se desactiva.
     isActive: {
       type: Boolean,

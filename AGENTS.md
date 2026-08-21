@@ -18,6 +18,7 @@ Express + MongoDB backend for **EdukControl**, a multi-tenant SaaS for school at
 - `node scripts/migrate-subjects-to-refs.js` — one-shot: `Grade.subject` y `TeacherSubject.subject` (String) → `subject_id` (ref `Subject`). Empata contra el catálogo ignorando mayúsculas/acentos/espacios y crea las materias faltantes con un `code` derivado (`MAT-001`). Tiene un **pre-flight que aborta sin escribir** si dos grafías de la misma materia colisionarían contra los índices únicos nuevos. Idempotente. `DRY_RUN=1` para simular. **Correr DESPUÉS de `migrate-grade-periods.js`** (el pre-flight agrupa por `gradingPeriod`).
 - `node scripts/migrate-workshop-groups.js` — one-shot: convierte los talleres de Tecnología en grupos transversales `Group.type: "taller"`. Borra los 48 `TeacherSubject`/`ClassSchedule` de Tecnología que cada grupo de origen tenía (los 4 maestros en el mismo bloque) y crea 12 grupos taller (4 talleres × 3 grados) con su propio maestro y horario. Marca los grupos de origen como `type: "regular"` y asigna `Student.workshop_group_id` a cada alumno (distribución uniforme). **Idempotente** (aborta si ya hay grupos taller).
 - `node scripts/load-schedules.js` — reconstruye TODO el horario del ciclo (los 18 maestros) desde el array `SCHEDULES` transcrito del PDF de la escuela. Modo `DRY_RUN` (default): valida resoluciones (bloques, grupos, materias, maestros) y detecta conflictos de maestro (doble-book) y de grupo (dos materias en el mismo bloque) sin escribir. Para escribir: `DRY_RUN=0 node scripts/load-schedules.js`. **Borra y recrea todos los `TeacherSubject` y `ClassSchedule` del ciclo** — no es idempotente por maestro, el array es la fuente de verdad completa. Entradas `[day, "M1-M3"|"M2", subjectCode, target]` donde `target` es `1A`..`3D` o `TALLER:<grado>` (resuelto contra la sección del maestro en `TALLER_SECTION`). Los bloques del shift se mapean por nombre (`Módulo N` → `M{N}`). Verificación post-carga: cada grupo de origen debe quedar con exactamente 8 huecos (los bloques de taller transversal), y los grupos `taller` con sus 2 bloques por día LUN/MAR/MIE/JUE.
+- `node scripts/backfill-mark-absences.js` — marks absences for a given date (or today). Uses the same logic as the cronjob. `DRY_RUN=1` to simulate. **Backup before running in production.**
 - There is **no test framework, no test script, and no test directory**. Don't suggest `npm test`.
 
 ## Entry points & layout
@@ -28,7 +29,7 @@ Express + MongoDB backend for **EdukControl**, a multi-tenant SaaS for school at
 - `middleware/` — `jwt.middleware.js` (verifies `Authorization: Bearer`), `authorize.middleware.js` (`authorize(...roles)`), `device.middleware.js` (`verifyDeviceApiKey` compares the device API key with `crypto.timingSafeEqual`; `verifyAdmsDevice` allowlists ZKTeco terminals by serial number and resolves their tenant), `tenant-context.middleware.js` (`attachSchoolContext`, `attachActiveSchoolYear`, `requireGuardianOf` — para los endpoints del Guardian Dashboard que necesitan school/schoolYear/relación tutor-student inyectados en `req`).
 - `services/notification.service.js` — Firebase Admin SDK wrapper; safe to call when Firebase is unconfigured (logs warning, returns null).
 - `services/attendance.service.js` — `registerAttendanceEvent` centraliza lo que comparten `POST /api/attendance/device-trigger` y el push ADMS de `/iclock/cdata`: supresión de duplicados (±60 s por alumno+dispositivo), alternancia entry/exit, creación del `AttendanceLog`, invalidación del cache de los tutores y disparo de la notificación push en `process.nextTick`.
-- `models/` — `User`, `School`, `SchoolYear`, `Student`, `AttendanceLog`, `Enrollment`, `Group`, `Grade`, `Subject`, `TeacherSubject`, `Guardian`, `AssetVersion`, `ConductLog`, `ConductConfig`, `Announcement`, `Citation`, `GradingPeriod`, `SchoolShift`, `ClassSchedule`.
+- `models/` — `User`, `School`, `SchoolYear`, `Student`, `AttendanceLog`, `Enrollment`, `Group`, `Grade`, `Subject`, `TeacherSubject`, `Guardian`, `AssetVersion`, `ConductLog`, `ConductConfig`, `Announcement`, `Citation`, `GradingPeriod`, `SchoolShift`, `ClassSchedule`, `SchoolCalendar`.
 - `db/index.js` — Mongoose connection (exits the process on failure).
 - `error-handling/index.js` — 404 catch-all + central error handler (translates Mongoose `ValidationError`, `CastError`, `11000` duplicate-key to HTTP responses).
 - `services/dashboard-cache.service.js` — invalidación compartida de las keys de cache del dashboard (`dashboard:*`, `student-grades:*`, `student-kpis:*`) para todos los tutores de un `studentId`. Se llama desde `grades.controller.js` y `conduct-logs.controller.js`.
@@ -110,6 +111,9 @@ All under `/api` (no `/v1` prefix). Auth endpoints are under `/auth` (no `/api` 
 | GET | `/api/guardians/me/students/:studentId/conduct-summary` | JWT + tutor dueño | Resumen de conducta para el Guardian Dashboard (cuando el padre selecciona un hijo). Devuelve `{ success, data: { currentScore, maxScore, recentLogs } }`. `currentScore` es el acumulado histórico (merits − demerits, clamp a [0, baseline]). Requiere los middlewares `attachSchoolContext`, `attachActiveSchoolYear` y `requireGuardianOf` (auto-inyectados en la ruta). |
 | GET | `/api/conduct-config` | JWT + staff | Devuelve la config efectiva de la escuela (mezcla con defaults si nunca se creó). |
 | PUT | `/api/conduct-config` | JWT + admin / registrar / super_admin | Upsert. Body: `{ weights?: { minor?, moderate?, severe? }, merit_points?, baseline?, floor?, school? }` (school solo para super_admin). |
+| POST | `/api/attendance/mark-absences` | JWT + admin/registrar/super_admin | Marcación manual de ausencias (fallback del cronjob). Body: `{ date?: "2026-08-19" }`. Retorna `{ marked, skipped, date }`. |
+| PUT | `/api/attendance/logs/:logId/justify` | JWT + admin/registrar | Justifica una ausencia. Body: `{ justified: true, justified_reason: "Enfermedad" }`. Solo para logs con `status: "absent"`. |
+| GET/POST/PUT/DELETE | `/api/school-calendar/*` | JWT + staff (read) / admin,registrar,super_admin (write) | CRUD de calendario escolar (días festivos, vacaciones, suspensiones). El cronjob de ausencias consulta este modelo para saltarse días no lectivos. |
 
 Health: `GET /health` (unauthenticated). Root: `GET /` returns service banner.
 
@@ -131,6 +135,33 @@ Health: `GET /health` (unauthenticated). Root: `GET /` returns service banner.
 - `school` is denormalized from `student.school` into the log so tenant queries don't need a join.
 - Push notification dispatch runs in **`process.nextTick`** after the response is sent; the log is created first, then `notification_sent` is flipped to `true` only on successful delivery. Expect `notification_sent` to lag behind API success.
 - Duplicate suppression: a log for the same `(student, device)` within **±60 s** reuses the existing document, responds `200` (not `201`) with `duplicate: true`, and does **not** re-notify. Lives in `services/attendance.service.js`.
+
+## Auto-absence system (cronjob + grace period)
+
+The system automatically marks students as absent if they don't tap the biometric reader by the cutoff time. It also handles late arrivals that override existing absences.
+
+**How it works:**
+1. Each `SchoolShift` has a `gracePeriodMinutes` field (default 30). Cutoff = `startTime + gracePeriodMinutes`.
+2. A cronjob runs `L-V 08:00` (configurable via `CRON_ABSENCE_SCHEDULE`). For each active school, it calls `markAbsencesForSchool()`.
+3. `markAbsencesForSchool()` checks `SchoolCalendar` — if the date is a holiday/vacation/suspension, it skips. Otherwise, for each shift, it finds active students without an entry log and creates `status: "absent"` logs. Push notifications are sent to each guardian individually.
+4. When a student taps AFTER the cutoff, `resolveLateArrival()` detects the existing `absent` log and updates it to `status: "late"` with the real tap time. If no absent log exists, it creates a normal `late` entry.
+
+**Key functions in `services/attendance.service.js`:**
+- `isSchoolDay(school, schoolYearId, date)` — checks `SchoolCalendar` for holidays/vacations
+- `isAfterGracePeriod(student, eventTime)` — computes cutoff from `SchoolShift.startTime + gracePeriodMinutes`
+- `resolveLateArrival({ student, eventTime, device, verificationMode, snapshotUrl })` — updates absent→late or creates late
+- `markAbsencesForSchool(schoolId, schoolYearId, targetDate?)` — the main cronjob function
+
+**AttendanceLog `status` field:** `on_time` | `late` | `absent` | `null` (exit events, legacy). Only set for entry events.
+
+**`SchoolCalendar` model:** `{ school, school_year_id, date, type: "holiday"|"vacation"|"suspension"|"non_lectivo", name? }`. The cronjob skips dates with active calendar entries.
+
+**Cron configuration (.env):**
+- `CRON_ABSENCE_ENABLED` — default `true`. Set `false` to disable.
+- `CRON_ABSENCE_SCHEDULE` — default `0 8 * * 1-5` (L-V 08:00).
+- `CRON_TZ` — timezone for the cron schedule (e.g. `America/Mexico_City`).
+
+**Manual trigger:** `POST /api/attendance/mark-absences` (JWT + admin/registrar). Body: `{ date?: "YYYY-MM-DD" }`.
 
 ## Hybrid auth: ADMS push from ZKTeco terminals (`/iclock/*`)
 
@@ -169,6 +200,10 @@ Protocol rules that are easy to break:
 
 `PENDING_UPLOADS_DIR` (default `/tmp/eduk-pending-uploads`) — directorio donde se persisten los buffers que fallaron al subirse a Cloudinary, para que el job `scripts/retry-pending-uploads.js` los reprocese.
 
+`CRON_ABSENCE_ENABLED` — default `true`. Set `false` to disable the auto-absence cronjob.
+`CRON_ABSENCE_SCHEDULE` — cron expression for the absence marking job (default `0 8 * * 1-5` = L-V 08:00).
+`CRON_TZ` — timezone for the cron schedule (e.g. `America/Mexico_City`).
+
 `CLOUDINARY_NOTIFICATION_URL` (opcional) — URL base pública de tu backend (e.g. `https://api.tu-dominio.com`). Si está configurada, los uploads usan `eager_async: true` + `notification_url` para que Cloudinary procese las transformaciones async y notifique por webhook cuando termine. Si está vacía, el comportamiento es síncrono (default en desarrollo).
 
 `PENDING_UPLOADS_BACKEND` (opcional) — `disk` (default) o `s3`. Si es `s3`, los buffers de uploads fallidos se persisten en S3 en vez de disco. Requiere también: `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_REGION`, `S3_PENDING_UPLOADS_BUCKET`.
@@ -183,7 +218,7 @@ Firebase service account JSON (`config/firebase-service-account.json`) is **giti
 - `PUT /api/schools/:schoolId` only accepts `name` and `isActive` (whitelist). The logo is NOT updated via this endpoint — use `POST /api/schools/:schoolId/logo` (upload/replace) or `DELETE /api/schools/:schoolId/logo` (remove). `logoUrl` is intentionally excluded from the whitelist to prevent a string-from-body update that bypasses Cloudinary.
 - `SchoolYear` (`school`, `name` matching `^\d{4}-\d{4}$`, `startDate`, `endDate`, `isActive`) is the source of truth for school cycles. `Group`, `Enrollment`, `Grade` (denormalized from `Enrollment`), and `TeacherSubject` all reference it via `school_year_id` (ObjectId ref) instead of a raw string. Unique per school: `{ school, name }`.
 - `Student.status` ∈ `active | withdrawn_temp | withdrawn_permanent`.
-- `AttendanceLog.event_type` ∈ `entry | exit`. `AttendanceLog.verificationMode` ∈ `FACE | RFID | MANUAL` (default `RFID` — historic logs all predate facial recognition). `AttendanceLog.snapshotUrl` is the camera capture of the check-in event, not the student's reference photo (that one is `Student.photoUrl`).
+- `AttendanceLog.event_type` ∈ `entry | exit`. `AttendanceLog.verificationMode` ∈ `FACE | RFID | MANUAL` (default `RFID` — historic logs all predate facial recognition). `AttendanceLog.snapshotUrl` is the camera capture of the check-in event, not the student's reference photo (that one is `Student.photoUrl`). `AttendanceLog.status` ∈ `on_time | late | absent | null` (only set for entry events; `null` for exit events and legacy records).
 - `Student.biometricId` is the User ID / PIN the student is enrolled under in the ZKTeco terminal. Stored as `String` (leading zeros are significant: `"0042" ≠ "42"`). `Student.isFaceEnrolled` marks that the face template was actually loaded onto the device, as distinct from merely having a `biometricId` assigned.
 - `Group.grade` ∈ `{1, 2, 3}`. `Group.type` ∈ `regular | taller` (default `regular`). Los grupos `taller` son secciones transversales de Tecnología que mezclan alumnos de varios grupos de origen del mismo grado (el grupo de origen se dispersa en el bloque de taller; cada alumno pertenece a UN solo taller vía `Student.workshop_group_id`).
 - `Student.workshop_group_id` (ref `Group`) apunta al grupo taller del alumno. Se elige UNA sola vez al ingresar a primer grado y se conserva en ciclos siguientes: al promover, `students.controller.js#promoteStudent` lo re-apunta al grupo taller del mismo nombre de sección en el nuevo grado/ciclo. `enrollments.controller.js` NO lo toca.
@@ -201,6 +236,7 @@ Firebase service account JSON (`config/firebase-service-account.json`) is **giti
   - `Grade`: `{ enrollment_id, subject_id, gradingPeriod }` unique — **sustituye** a `uniq_enrollment_subject_period`.
   - `TeacherSubject`: `{ teacher_id, subject_id, group_id, school_year_id }` unique — **sustituye** a `uniq_teacher_subject_group_year`.
   - `Subject`: `{ school, code }` unique; `{ school, name }` **no** unique (los datos migrados pueden traer nombres repetidos; deduplicar el catálogo es tarea manual).
+  - `SchoolCalendar`: `{ school, school_year_id, date }` unique.
   - Mongoose crea los índices nuevos pero **nunca borra los viejos**: los dropean las migraciones. Un índice único sobre un campo eliminado sigue exigiendo unicidad sobre `null` y bloquea la segunda inserción de cada documento.
 - Mongoose `__v` is globally disabled (`versionKey: false`).
 

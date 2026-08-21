@@ -19,6 +19,7 @@ const conductLogsRouter = require("./conduct-logs.routes"); // /api/conduct-logs
 const conductConfigRouter = require("./conduct-config.routes"); // /api/conduct-config (config de impacto)
 const announcementsRouter = require("./announcements.routes"); // /api/announcements (CRUD staff de avisos)
 const citationsRouter = require("./citations.routes"); // /api/citations (CRUD staff de citatorios)
+const schoolCalendarRouter = require("./school-calendar.routes"); // /api/school-calendar (días festivos/vacaciones)
 
 // Health check rápido bajo /api
 router.get("/", (req, res, next) => {
@@ -40,6 +41,7 @@ router.use("/conduct-logs", conductLogsRouter);
 router.use("/conduct-config", conductConfigRouter);
 router.use("/announcements", announcementsRouter);
 router.use("/citations", citationsRouter);
+router.use("/school-calendar", schoolCalendarRouter);
 // Calificaciones: rutas anidadas bajo students + rutas planas en /grades
 router.use("/students/:studentId/grades", studentOnlyGrades);
 router.use("/grades", gradeById);

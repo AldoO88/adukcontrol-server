@@ -61,6 +61,22 @@ const attendanceLogSchema = new Schema(
       type: Boolean,
       default: false,
     },
+    // Justificación de ausencia: solo aplica cuando status === "absent".
+    // Solo admin/registrar pueden justificar (el tutor no, para otro sprint).
+    justified: {
+      type: Boolean,
+      default: false,
+    },
+    justified_reason: {
+      type: String,
+      trim: true,
+      maxlength: 500,
+      default: null,
+    },
+    justified_at: {
+      type: Date,
+      default: null,
+    },
     // Status computado al crear un entry event comparando event_time con
     // la hora de inicio del turno (SchoolShift.startTime) del grupo del
     // alumno. Solo se setea en entry events:

@@ -7,6 +7,10 @@ const {
   deviceTriggerController,
   getAttendanceLogsController,
 } = require("../controllers/attendance.controller");
+const {
+  markAbsencesController,
+  justifyAttendanceLogController,
+} = require("../controllers/attendance-mark-absences.controller");
 const { isAuthenticated } = require("../middleware/jwt.middleware");
 const { authorize } = require("../middleware/authorize.middleware");
 const { verifyDeviceApiKey } = require("../middleware/device.middleware");
@@ -40,6 +44,25 @@ router.get(
   isAuthenticated,
   authorize("admin", "principal", "registrar", "teacher", "prefect", "social_worker"),
   getAttendanceLogsController
+);
+
+// POST /api/attendance/mark-absences
+// Marcación manual de ausencias (fallback del cronjob).
+// Auth: JWT + admin/registrar/super_admin.
+router.post(
+  "/mark-absences",
+  isAuthenticated,
+  authorize("admin", "registrar", "super_admin"),
+  markAbsencesController
+);
+
+// PUT /api/attendance/logs/:logId/justify
+// Justifica una ausencia. Auth: JWT + admin/registrar.
+router.put(
+  "/logs/:logId/justify",
+  isAuthenticated,
+  authorize("admin", "registrar"),
+  justifyAttendanceLogController
 );
 
 module.exports = router;
