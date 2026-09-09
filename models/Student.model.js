@@ -66,6 +66,14 @@ const studentSchema = new Schema(
       required: [true, "Last name is required."],
       trim: true,
     },
+    sex: {
+      type: String,
+      enum: {
+        values: ["male", "female"],
+        message: 'sex must be one of: "male", "female".',
+      },
+      default: null,
+    },
     // UID de la tarjeta RFID; único DENTRO de la escuela (opcional)
     rfid_card: {
       type: String,

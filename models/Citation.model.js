@@ -106,21 +106,45 @@ const citationSchema = new Schema(
       trim: true,
       maxlength: 1000,
     },
+    // Materia relacionada con el citatorio (opcional). Útil cuando un
+    // maestro imparte varias materias al mismo grupo y el problema es
+    // específico de una materia.
+    subject: {
+      type: Schema.Types.ObjectId,
+      ref: "Subject",
+      default: null,
+    },
 
     // -------- Tracking del workflow --------
     // pending    → creado, aún no confirmado por el tutor
     // confirmed  → el tutor confirmó que asistirá
     // completed  → la reunión ocurrió (el staff la marca al terminar)
     // no_show    → el tutor no se presentó (el staff la marca después)
+    // cancelled  → el citatorio fue cancelado por el teacher o admin
     status: {
       type: String,
       required: [true, "status is required."],
       enum: {
-        values: ["pending", "confirmed", "completed", "no_show", "expired"],
-        message: "status must be: pending, confirmed, completed or no_show.",
+        values: ["pending", "confirmed", "completed", "no_show", "expired", "cancelled"],
+        message: "status must be: pending, confirmed, completed, no_show, expired or cancelled.",
       },
       default: "pending",
       index: true,
+    },
+
+    // -------- Reagendación --------
+    // Marca si el tutor solicitó reagendar la cita. El teacher ve este
+    // flag en su listado y sabe que debe proponer una nueva fecha.
+    rescheduleRequested: {
+      type: Boolean,
+      default: false,
+    },
+    // Razón del tutor para solicitar reagendación.
+    rescheduleReason: {
+      type: String,
+      trim: true,
+      maxlength: 500,
+      default: null,
     },
   },
   {

@@ -10,6 +10,7 @@ const {
   getAnnouncementById,
   updateAnnouncement,
   deleteAnnouncement,
+  getMyAnnouncements,
   REPORTER_ROLES,
 } = require("../controllers/announcements.controller");
 
@@ -32,6 +33,9 @@ const STAFF_ROLES = [
 
 // POST /api/announcements — crear (staff con permiso; teacher con alcance)
 router.post("/", authorize(...REPORTER_ROLES), createAnnouncement);
+
+// GET /api/announcements/me — avisos del maestro logueado (mis publicaciones + generales)
+router.get("/me", authorize(...STAFF_ROLES), getMyAnnouncements);
 
 // GET /api/announcements — listar (staff)
 router.get("/", authorize(...STAFF_ROLES), getAllAnnouncements);

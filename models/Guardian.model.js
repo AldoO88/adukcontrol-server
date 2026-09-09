@@ -29,6 +29,14 @@ const guardianSchema = new Schema(
       required: [true, "Guardian name is required."],
       trim: true,
     },
+    sex: {
+      type: String,
+      enum: {
+        values: ["male", "female"],
+        message: 'sex must be one of: "male", "female".',
+      },
+      default: null,
+    },
     // Relación o parentesco: "madre", "padre", "tutor legal", etc.
     relationship: {
       type: String,

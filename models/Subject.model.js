@@ -98,6 +98,26 @@ const subjectSchema = new Schema(
       type: Boolean,
       default: true,
     },
+    // Whether this subject is Tutoría (homeroom/advisory).
+    // The tutor is responsible for the group for the entire school year.
+    isTutoria: {
+      type: Boolean,
+      default: false,
+    },
+    // Color hex para UI (front-end schedule, cards, etc.)
+    color: {
+      type: String,
+      default: null,
+      trim: true,
+      match: [/^#([0-9A-Fa-f]{3}|[0-9A-Fa-f]{6})$/, "Color must be a valid hex code."],
+    },
+    // Nombre del icono de lucide-react-native (ej: "Book", "Calculator")
+    icon: {
+      type: String,
+      default: null,
+      trim: true,
+      maxlength: 50,
+    },
   },
   {
     timestamps: true,

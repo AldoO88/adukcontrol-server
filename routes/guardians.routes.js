@@ -24,6 +24,7 @@ const {
   getMyStudentAttendanceHistory,
   getMyAnnouncements,
   confirmMyCitation,
+  requestCitationReschedule,
   getMyAnnouncementById,
   getMyCitationById,
 } = require("../controllers/guardians.controller");
@@ -134,6 +135,15 @@ router.patch(
   attachSchoolContext,
   requireGuardianOf,
   confirmMyCitation
+);
+
+// PATCH /me/students/:studentId/citations/:citationId/request-reschedule
+// El tutor solicita reagendar la cita. Body: { reason: string (required) }
+router.patch(
+  "/me/students/:studentId/citations/:citationId/request-reschedule",
+  attachSchoolContext,
+  requireGuardianOf,
+  requestCitationReschedule
 );
 
 router.post("/me/fcm-token", registerFcmToken);

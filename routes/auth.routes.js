@@ -10,6 +10,8 @@ const {
   verifyOtpController,
   activateAccountController,
   verifyController,
+  registerStaffFcmToken,
+  changePasswordController,
 } = require("../controllers/auth.controller");
 const { isAuthenticated } = require("../middleware/jwt.middleware");
 
@@ -48,5 +50,11 @@ router.post("/activate-account", activateAccountController);
 
 // GET /auth/verify — decodificar JWT (requiere token)
 router.get("/verify", isAuthenticated, verifyController);
+
+// POST /auth/fcm-token — registrar token FCM para notificaciones del staff
+router.post("/fcm-token", isAuthenticated, registerStaffFcmToken);
+
+// PUT /auth/change-password — cambiar contraseña (cualquier usuario autenticado)
+router.put("/change-password", isAuthenticated, changePasswordController);
 
 module.exports = router;

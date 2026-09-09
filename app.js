@@ -8,7 +8,6 @@ require("./db"); // Iniciar conexión a MongoDB al importar
 const notificationService = require("./services/notification.service");
 notificationService.initializeFirebase(); // Inicializar FCM (no falla si no está configurado)
 
-const cors = require("cors");
 const express = require("express");
 
 const app = express();
@@ -33,15 +32,7 @@ app.get("/", (req, res) => {
   });
 });
 
-// CORS antes de montar el resto
-app.use(
-  cors({
-    origin: process.env.ORIGIN || "http://localhost:5173",
-    credentials: true,
-  })
-);
-
-require("./config")(app); // Middlewares globales (helmet, parsers, logger, etc.)
+require("./config")(app); // Middlewares globales (CORS, helmet, parsers, logger, etc.)
 
 const indexRoutes = require("./routes/index.routes");
 const authRouter = require("./routes/auth.routes");

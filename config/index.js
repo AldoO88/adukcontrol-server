@@ -9,17 +9,25 @@ const helmet = require("helmet"); // Cabeceras de seguridad
 const mongoSanitize = require("express-mongo-sanitize"); // Sanitiza claves $ y .
 const hpp = require("hpp"); // Previene HTTP parameter pollution
 
-const FRONTEND_URL = process.env.ORIGIN || "http://localhost:5173"; // Origen del frontend
+const ALLOWED_ORIGINS = (process.env.ORIGIN || "http://localhost:5173,http://localhost:8081")
+  .split(",")
+  .map((o) => o.trim());
 
 module.exports = (app) => {
   // Confiar en X-Forwarded-For de un único proxy (importante para que
   // express-rate-limit identifique correctamente la IP del cliente).
   app.set("trust proxy", 1);
 
-  // CORS: permitir el frontend configurado, con credenciales
+  // CORS: permitir los orígenes configurados, con credenciales
   app.use(
     cors({
-      origin: process.env.ORIGIN || FRONTEND_URL,
+      origin: (origin, callback) => {
+        if (!origin || ALLOWED_ORIGINS.includes(origin)) {
+          callback(null, origin || false);
+        } else {
+          callback(new Error("Not allowed by CORS"));
+        }
+      },
       methods: ["GET", "POST", "PUT", "PATCH", "DELETE"],
       allowedHeaders: ["Content-Type", "Authorization"],
       credentials: true,

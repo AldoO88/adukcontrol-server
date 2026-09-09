@@ -37,6 +37,14 @@ const userSchema = new Schema(
       default: null,
       trim: true,
     },
+    sex: {
+      type: String,
+      enum: {
+        values: ["male", "female"],
+        message: 'sex must be one of: "male", "female".',
+      },
+      default: null,
+    },
     // User's email (optional). Login is by phoneNumber, but email
     // can be used for notifications, recovery, or other future flows.
     email: {
@@ -124,6 +132,13 @@ const userSchema = new Schema(
         message: "appointmentType must be BASE, INTERINATO, HONORARIOS, or OTHER.",
       },
       default: "BASE",
+    },
+    // Firebase Cloud Messaging token for push notifications.
+    // Used by staff mobile app to receive notifications (e.g., when a
+    // guardian confirms or requests reschedule of a citation).
+    fcm_token: {
+      type: String,
+      default: null,
     },
   },
   {

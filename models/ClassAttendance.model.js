@@ -19,8 +19,8 @@ const attendanceRecordSchema = new Schema(
       type: String,
       required: [true, "Status is required."],
       enum: {
-        values: ["present", "retard", "absent"],
-        message: "Status must be one of: present, retard, absent.",
+        values: ["present", "retard", "absent", "justified"],
+        message: "Status must be one of: present, retard, absent, justified.",
       },
     },
     // Ubicación del alumno: está en la escuela o no
@@ -90,6 +90,13 @@ const classAttendanceSchema = new Schema(
       ref: "ClassSchedule",
       default: null,
     },
+    // Período de evaluación al que pertenece esta sesión
+    period_id: {
+      type: Schema.Types.ObjectId,
+      ref: "GradingPeriod",
+      default: null,
+      index: true,
+    },
     // Fecha de la clase (solo fecha, sin hora)
     date: {
       type: Date,
@@ -118,6 +125,7 @@ const classAttendanceSchema = new Schema(
       present: { type: Number, default: 0 },
       retard: { type: Number, default: 0 },
       absent: { type: Number, default: 0 },
+      justified: { type: Number, default: 0 },
     },
   },
   {

@@ -789,7 +789,7 @@ const getMyStudentSchedule = async (req, res, next) => {
       group_id: { $in: groupIds },
       isActive: true,
     })
-      .populate("subject_id", "code name")
+      .populate("subject_id", "code name color icon")
       .populate("teacher_id", "name last_name")
       .populate("school_shift_id", "name shift startTime endTime timeBlocks");
 
@@ -822,6 +822,8 @@ const getMyStudentSchedule = async (req, res, next) => {
           subject_id: cs.subject_id?._id || null,
           subject: cs.subject_id?.name || null,
           subject_code: cs.subject_id?.code || null,
+          color: cs.subject_id?.color || null,
+          icon: cs.subject_id?.icon || null,
           teacher: cs.teacher_id
             ? `${cs.teacher_id.name} ${cs.teacher_id.last_name || ""}`.trim()
             : null,
@@ -1790,6 +1792,32 @@ const enrichAnnouncementAudience = (a) => {
   return { type: a.targetType, summary, groups, students };
 };
 
+// Filtra audience.students para que solo incluya los hijos del tutor
+// autenticado. Evita exponer nombres de otros alumnos en targetType="student".
+const filterAudienceForGuardian = (audience, studentIdSet) => {
+  if (audience.type !== "student") return audience;
+
+  const filtered = audience.students.filter((s) =>
+    studentIdSet.has(String(s._id))
+  );
+
+  const names = filtered.map(
+    (s) => `${s.first_name} ${s.last_name}`.trim()
+  );
+  let summary;
+  if (names.length === 0) {
+    summary = "Alumnos específicos";
+  } else if (names.length === 1) {
+    summary = names[0];
+  } else if (names.length === 2) {
+    summary = names.join(" y ");
+  } else {
+    summary = `${names.slice(0, -1).join(", ")} y ${names[names.length - 1]}`;
+  }
+
+  return { ...audience, students: filtered, summary };
+};
+
 
 const getMyAnnouncements = async (req, res, next) => {
   try {
@@ -1933,7 +1961,7 @@ const getMyAnnouncements = async (req, res, next) => {
         sender,
         // Audience enriquecida: type, summary, groups[] (con full_label
         // y school_year populado), students[] (con controlNumber).
-        audience: enrichAnnouncementAudience(a),
+        audience: filterAudienceForGuardian(enrichAnnouncementAudience(a), studentIdSet),
         // eventDate unifica la fecha para sort/display en el front
         eventDate: a.createdAt,
       });
@@ -1992,10 +2020,8 @@ const getMyAnnouncements = async (req, res, next) => {
 // Guardian del student. El controller valida que el citatorio pertenece
 // a ese student.
 //
-// NOTA: por ahora NO se envía push al staff creator. El User model no
-// tiene fcm_token (solo Guardian lo tiene, para el app móvil del tutor).
-// El staff verá la confirmación en su próximo GET /api/citations. Cuando
-// se agregue fcm_token al User, este es el lugar para despachar el push.
+// NOTA: El User model ahora tiene fcm_token. Se envía push al staff creator
+// cuando el tutor confirma un citatorio.
 const confirmMyCitation = async (req, res, next) => {
   try {
     const { studentId, citationId } = req.params;
@@ -2035,6 +2061,32 @@ const confirmMyCitation = async (req, res, next) => {
       .populate("creator", "name last_name role")
       .populate("schoolYear", "name startDate endDate isActive")
       .lean();
+
+    // 4) Notificar al staff creator que el tutor confirmó (async).
+    process.nextTick(() => {
+      (async () => {
+        try {
+          const guardianName = `${req.payload.name || ""} ${req.payload.last_name || ""}`.trim();
+          const result = await notificationService.sendCitationConfirmedNotification(
+            populated,
+            guardianName
+          );
+          if (result && result.dispatched > 0) {
+            console.log(
+              `[citations] Confirmation notification dispatched for citation ${citationId} to staff ${populated.creator?._id}`
+            );
+          } else {
+            console.log(
+              `[citations] No confirmation notification dispatched: ${result?.reason || "unknown"}`
+            );
+          }
+        } catch (err) {
+          console.error(
+            `[citations] Background confirmation notification error for citation ${citationId}: ${err.message}`
+          );
+        }
+      })();
+    });
 
     res.status(200).json({
       message: "Citation confirmed successfully.",
@@ -2148,8 +2200,12 @@ const getMyAnnouncementById = async (req, res, next) => {
         .json({ message: `No announcement with id: ${id}` });
     }
 
-    // 4) Enrichment: spread del helper a nivel raíz.
-    const audience = enrichAnnouncementAudience(announcement);
+    // 4) Enrichment: spread del helper a nivel raíz, con filtro de privacidad.
+    const audience = filterAudienceForGuardian(
+      enrichAnnouncementAudience(announcement),
+      studentIdSet
+    );
+
     res.status(200).json({
       ...announcement,
       targetType: audience.type,
@@ -2206,6 +2262,101 @@ const getMyCitationById = async (req, res, next) => {
   }
 };
 
+// =====================================================================
+// PATCH /api/guardians/me/students/:studentId/citations/:citationId/request-reschedule
+// El tutor solicita reagendar una cita. Body: { reason: string (required) }
+//
+// Solo permite pending o confirmed. Marca rescheduleRequested: true
+// y rescheduleReason. Envía push notification al staff creator.
+const requestCitationReschedule = async (req, res, next) => {
+  try {
+    const { studentId, citationId } = req.params;
+    const { reason } = req.body;
+
+    if (!mongoose.Types.ObjectId.isValid(citationId)) {
+      return res
+        .status(404)
+        .json({ message: `No citation with id: ${citationId}` });
+    }
+
+    // Validar reason
+    if (!reason || !String(reason).trim()) {
+      return res.status(400).json({ message: "reason is required." });
+    }
+    const reasonTrim = String(reason).trim();
+    if (reasonTrim.length > 500) {
+      return res
+        .status(400)
+        .json({ message: "reason must be at most 500 characters." });
+    }
+
+    // 1) Verificar que el citatorio existe y pertenece al student.
+    const citation = await Citation.findOne({
+      _id: citationId,
+      student: studentId,
+      school: req.school,
+    });
+    if (!citation) {
+      return res
+        .status(404)
+        .json({ message: `No citation with id: ${citationId} for this student.` });
+    }
+
+    // 2) Solo permitimos pending o confirmed
+    if (!["pending", "confirmed"].includes(citation.status)) {
+      return res.status(409).json({
+        message: `Cannot request reschedule for citation in status "${citation.status}". Only "pending" or "confirmed" citations can be rescheduled.`,
+      });
+    }
+
+    // 3) Marcar solicitud de reagendación
+    citation.rescheduleRequested = true;
+    citation.rescheduleReason = reasonTrim;
+    await citation.save();
+
+    // 4) Devolver el citatorio actualizado
+    const populated = await Citation.findById(citation._id)
+      .populate("student", "first_name last_name photoUrl controlNumber")
+      .populate("creator", "name last_name role")
+      .populate("schoolYear", "name startDate endDate isActive")
+      .lean();
+
+    // 5) Notificar al staff creator sobre la solicitud (async)
+    process.nextTick(() => {
+      (async () => {
+        try {
+          const guardianName = `${req.payload.name || ""} ${req.payload.last_name || ""}`.trim();
+          const result = await notificationService.sendCitationRescheduleRequestNotification(
+            populated,
+            guardianName,
+            reasonTrim
+          );
+          if (result && result.dispatched > 0) {
+            console.log(
+              `[citations] Reschedule request notification dispatched for citation ${citationId} to staff ${populated.creator?._id}`
+            );
+          } else {
+            console.log(
+              `[citations] No reschedule request notification dispatched: ${result?.reason || "unknown"}`
+            );
+          }
+        } catch (err) {
+          console.error(
+            `[citations] Background notification error for reschedule request: ${err.message}`
+          );
+        }
+      })();
+    });
+
+    res.status(200).json({
+      message: "Reschedule request submitted successfully.",
+      citation: populated,
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
 module.exports = {
   getAllGuardians,
   getMyGuardians,
@@ -2222,6 +2373,7 @@ module.exports = {
   getMyStudentAttendanceHistory,
   getMyAnnouncements,
   confirmMyCitation,
+  requestCitationReschedule,
   getMyAnnouncementById,
   getMyCitationById,
 };

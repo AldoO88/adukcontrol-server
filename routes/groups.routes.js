@@ -9,9 +9,14 @@ const {
   updateGroup,
   deleteGroup,
   getGroupStudents,
+  getGroupSchedule,
 } = require("../controllers/groups.controller");
 const { isAuthenticated } = require("../middleware/jwt.middleware");
 const { authorize } = require("../middleware/authorize.middleware");
+const {
+  attachSchoolContext,
+  attachActiveSchoolYear,
+} = require("../middleware/tenant-context.middleware");
 
 const { Router } = express;
 const router = Router();
@@ -33,6 +38,15 @@ router.get(
   "/:groupId/students",
   authorize("admin", "principal", "registrar", "teacher", "prefect", "social_worker"),
   getGroupStudents
+);
+
+// GET /api/groups/:groupId/schedule — horario semanal del grupo
+router.get(
+  "/:groupId/schedule",
+  attachSchoolContext,
+  attachActiveSchoolYear,
+  authorize("admin", "principal", "registrar", "teacher", "prefect", "social_worker"),
+  getGroupSchedule
 );
 
 // GET /api/groups/:groupId — detalle de un grupo

@@ -701,12 +701,96 @@ const deleteAnnouncement = async (req, res, next) => {
   }
 };
 
+// =====================================================================
+// GET /api/announcements/me
+// Devuelve los avisos relevantes para el maestro logueado:
+//   - tab="mine"       → avisos que él publicó (sender = yo)
+//   - tab="general"    → avisos generales de la escuela (targetType = "general")
+//   - sin tab / otro   → ambos combinados (mis publicaciones + generales)
+// Filtros opcionales: priority, page, limit.
+const getMyAnnouncements = async (req, res, next) => {
+  try {
+    const {
+      tab,
+      priority,
+      page = 1,
+      limit = 20,
+    } = req.query;
+
+    const pageNum = Math.max(parseInt(page, 10) || 1, 1);
+    const limitNum = Math.min(Math.max(parseInt(limit, 10) || 20, 1), 100);
+    const skip = (pageNum - 1) * limitNum;
+
+    // Ciclo activo de la escuela.
+    let schoolYearFilter = {};
+    if (req.payload.schoolId) {
+      const activeSY = await resolveActiveSchoolYear(req.payload.schoolId);
+      if (activeSY) schoolYearFilter = { schoolYear: activeSY };
+    }
+
+    const baseFilter = {
+      ...tenantFilter(req),
+      ...schoolYearFilter,
+      // Excluir vencidos por default.
+      $or: [{ expiresAt: null }, { expiresAt: { $gt: new Date() } }],
+    };
+
+    if (priority) {
+      if (!["informative", "urgent"].includes(priority)) {
+        return res
+          .status(400)
+          .json({ message: 'priority must be "informative" or "urgent".' });
+      }
+      baseFilter.priority = priority;
+    }
+
+    // Construir filtro según el tab.
+    let filter;
+    const validTabs = ["mine", "general"];
+    const resolvedTab = validTabs.includes(tab) ? tab : null;
+
+    if (resolvedTab === "mine") {
+      filter = { ...baseFilter, sender: req.payload._id };
+    } else if (resolvedTab === "general") {
+      filter = { ...baseFilter, targetType: "general" };
+    } else {
+      // Ambos: mis publicaciones + generales.
+      filter = {
+        ...baseFilter,
+        $or: [
+          { sender: req.payload._id },
+          { targetType: "general" },
+        ],
+      };
+    }
+
+    const [items, total] = await Promise.all([
+      populateAnnouncement(Announcement.find(filter))
+        .sort({ createdAt: -1 })
+        .skip(skip)
+        .limit(limitNum),
+      Announcement.countDocuments(filter),
+    ]);
+
+    res.status(200).json({
+      items,
+      total,
+      page: pageNum,
+      limit: limitNum,
+      pages: Math.ceil(total / limitNum) || 1,
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
 module.exports = {
   createAnnouncement,
   getAllAnnouncements,
   getAnnouncementById,
   updateAnnouncement,
   deleteAnnouncement,
+  getMyAnnouncements,
   REPORTER_ROLES,
   ADMIN_ROLES,
 };

@@ -29,6 +29,7 @@ const School = require("../models/School.model");
 const TeacherSubject = require("../models/TeacherSubject.model");
 const Enrollment = require("../models/Enrollment.model");
 const Guardian = require("../models/Guardian.model");
+const Subject = require("../models/Subject.model");
 const notificationService = require("../services/notification.service");
 
 const tenantFilter = (req) =>
@@ -127,7 +128,55 @@ const populateCitation = (query) =>
   query
     .populate("student", "first_name last_name photoUrl controlNumber")
     .populate("creator", "name last_name role")
-    .populate("schoolYear", "name startDate endDate isActive");
+    .populate("schoolYear", "name startDate endDate isActive")
+    .populate("subject", "code name");
+
+// Helper: enriquece un array de citatorios con groupName buscando la
+// Enrollment del student en el schoolYear del citatorio.
+const enrichWithGroupName = async (citations) => {
+  if (!citations || citations.length === 0) return citations;
+
+  // Recopilar pares (studentId, schoolYearId) únicos.
+  const pairs = [];
+  for (const c of citations) {
+    const studentId = String(c.student?._id || c.student);
+    const schoolYearId = String(c.schoolYear?._id || c.schoolYear);
+    if (studentId && schoolYearId) {
+      pairs.push({ studentId, schoolYearId });
+    }
+  }
+
+  if (pairs.length === 0) return citations;
+
+  // Buscar enrollments en una sola query.
+  const enrollments = await Enrollment.find({
+    $or: pairs.map(({ studentId, schoolYearId }) => ({
+      student_id: studentId,
+      school_year_id: schoolYearId,
+    })),
+  })
+    .populate("group_id", "grade section")
+    .lean();
+
+  // Mapa: "studentId-schoolYearId" → groupName
+  const groupMap = new Map();
+  for (const e of enrollments) {
+    const key = `${String(e.student_id)}-${String(e.school_year_id)}`;
+    if (e.group_id) {
+      groupMap.set(key, `${e.group_id.grade}°${e.group_id.section}`);
+    }
+  }
+
+  // Asignar groupName a cada citatorio.
+  for (const c of citations) {
+    const studentId = String(c.student?._id || c.student);
+    const schoolYearId = String(c.schoolYear?._id || c.schoolYear);
+    const key = `${studentId}-${schoolYearId}`;
+    c.groupName = groupMap.get(key) || null;
+  }
+
+  return citations;
+};
 
 // =====================================================================
 // POST /api/citations
@@ -138,6 +187,7 @@ const populateCitation = (query) =>
 //     type:          "academic" | "behavioral" | "administrative" (required)
 //     location:      string, max 200 chars (required)
 //     reason:        string, max 1000 chars (required)
+//     subject:       ObjectId (optional, ref a Subject)
 //     schoolYear:    ObjectId (default al ciclo activo)
 //     school:        ObjectId (solo super_admin; default su JWT schoolId)
 //   }
@@ -151,6 +201,7 @@ const createCitation = async (req, res, next) => {
       reason,
       schoolYear,
       location,
+      subject: subjectId,
     } = req.body;
 
     // 1) School.
@@ -251,6 +302,23 @@ const createCitation = async (req, res, next) => {
         .json({ message: "location must be at most 200 characters." });
     }
 
+    // 7c) Validar subject (opcional). Si se envía, debe existir y pertenecer a la escuela.
+    let subjectObjectId = null;
+    if (subjectId) {
+      if (!mongoose.Types.ObjectId.isValid(subjectId)) {
+        return res.status(400).json({ message: "Invalid subject id." });
+      }
+      const subject = await Subject.findOne({ _id: subjectId, school })
+        .select("_id")
+        .lean();
+      if (!subject) {
+        return res
+          .status(404)
+          .json({ message: "Subject not found in this school." });
+      }
+      subjectObjectId = subject._id;
+    }
+
     // 8) Validar el alcance del teacher (si aplica).
     if (req.payload.role === "teacher") {
       const scopeCheck = await validateTeacherScopeForStudent(
@@ -274,6 +342,7 @@ const createCitation = async (req, res, next) => {
       type,
       location: locationTrim,
       reason: reasonTrim,
+      subject: subjectObjectId,
       status: "pending",
     });
 
@@ -348,10 +417,10 @@ const getAllCitations = async (req, res, next) => {
     const filter = { ...tenantFilter(req) };
 
     if (status) {
-      if (!["pending", "confirmed", "completed", "no_show"].includes(status)) {
+      if (!["pending", "confirmed", "completed", "no_show", "cancelled"].includes(status)) {
         return res.status(400).json({
           message:
-            'status must be "pending", "confirmed", "completed" or "no_show".',
+            'status must be "pending", "confirmed", "completed", "no_show" or "cancelled".',
         });
       }
       filter.status = status;
@@ -403,6 +472,8 @@ const getAllCitations = async (req, res, next) => {
       Citation.countDocuments(filter),
     ]);
 
+    await enrichWithGroupName(items);
+
     res.status(200).json({
       items,
       total,
@@ -433,6 +504,8 @@ const getCitationById = async (req, res, next) => {
       return res.status(404).json({ message: `No citation with id: ${id}` });
     }
 
+    await enrichWithGroupName([citation]);
+
     res.status(200).json(citation);
   } catch (error) {
     next(error);
@@ -441,16 +514,17 @@ const getCitationById = async (req, res, next) => {
 
 // =====================================================================
 // PATCH /api/citations/:id/status
-// Cambia el status del citatorio. Body: { status: "pending" | "confirmed" | "completed" | "no_show" }
+// Cambia el status del citatorio. Body: { status: "pending" | "confirmed" | "completed" | "no_show" | "cancelled" }
 //
 // Transiciones válidas:
-//   pending    → confirmed | completed | no_show
-//   confirmed  → completed | no_show
+//   pending    → confirmed | completed | no_show | cancelled
+//   confirmed  → completed | no_show | cancelled
 //   completed  → (terminal, no se puede cambiar)
 //   no_show    → (terminal, no se puede cambiar)
+//   cancelled  → (terminal, no se puede cambiar)
 //
 // Staff puede hacer cualquier transición válida. El tutor usa otro
-// endpoint (futuro) para `pending → confirmed` desde la app móvil.
+// endpoint para `pending → confirmed` desde la app móvil.
 const updateCitationStatus = async (req, res, next) => {
   try {
     const { id } = req.params;
@@ -460,10 +534,10 @@ const updateCitationStatus = async (req, res, next) => {
       return res.status(404).json({ message: `No citation with id: ${id}` });
     }
 
-    if (!["pending", "confirmed", "completed", "no_show"].includes(status)) {
+    if (!["pending", "confirmed", "completed", "no_show", "cancelled"].includes(status)) {
       return res.status(400).json({
         message:
-          'status must be "pending", "confirmed", "completed" or "no_show".',
+          'status must be "pending", "confirmed", "completed", "no_show" or "cancelled".',
       });
     }
 
@@ -476,10 +550,11 @@ const updateCitationStatus = async (req, res, next) => {
     }
 
     const validTransitions = {
-      pending: ["confirmed", "completed", "no_show"],
-      confirmed: ["completed", "no_show"],
+      pending: ["confirmed", "completed", "no_show", "cancelled"],
+      confirmed: ["completed", "no_show", "cancelled"],
       completed: [],
       no_show: [],
+      cancelled: [],
     };
 
     if (!validTransitions[existing.status].includes(status)) {
@@ -526,12 +601,387 @@ const deleteCitation = async (req, res, next) => {
   }
 };
 
+// =====================================================================
+// PATCH /api/citations/:id/reschedule
+// Reagenda un citatorio. Body: { scheduledDate, location? }
+//
+// Transiciones válidas: pending → pending | confirmed → pending
+// Solo el creator o admin pueden reagendar. Teacher solo puede reagendar
+// sus propios citatorios. Resetea rescheduleRequested a false.
+const rescheduleCitation = async (req, res, next) => {
+  try {
+    const { id } = req.params;
+    const { scheduledDate, location } = req.body;
+
+    if (!mongoose.Types.ObjectId.isValid(id)) {
+      return res.status(404).json({ message: `No citation with id: ${id}` });
+    }
+
+    // Solo pending o confirmed pueden reagendar
+    const existing = await Citation.findOne({
+      _id: id,
+      ...tenantFilter(req),
+    });
+    if (!existing) {
+      return res.status(404).json({ message: `No citation with id: ${id}` });
+    }
+
+    if (!["pending", "confirmed"].includes(existing.status)) {
+      return res.status(409).json({
+        message: `Cannot reschedule citation in status "${existing.status}". Only "pending" or "confirmed" citations can be rescheduled.`,
+      });
+    }
+
+    // Teacher solo puede reagendar sus propios citatorios
+    if (req.payload.role === "teacher" && String(existing.creator) !== String(req.payload._id)) {
+      return res.status(403).json({
+        message: "You can only reschedule citations you created.",
+      });
+    }
+
+    // Validar scheduledDate
+    if (!scheduledDate) {
+      return res.status(400).json({ message: "scheduledDate is required." });
+    }
+    const scheduledDateObj = new Date(scheduledDate);
+    if (Number.isNaN(scheduledDateObj.getTime())) {
+      return res
+        .status(400)
+        .json({ message: "scheduledDate is not a valid ISO date." });
+    }
+
+    // Validar location si se envía
+    let locationTrim = existing.location;
+    if (location !== undefined) {
+      if (!location || !String(location).trim()) {
+        return res.status(400).json({ message: "location cannot be empty." });
+      }
+      locationTrim = String(location).trim();
+      if (locationTrim.length > 200) {
+        return res
+          .status(400)
+          .json({ message: "location must be at most 200 characters." });
+      }
+    }
+
+    existing.scheduledDate = scheduledDateObj;
+    existing.location = locationTrim;
+    existing.status = "pending";
+    existing.rescheduleRequested = false;
+    existing.rescheduleReason = null;
+    await existing.save();
+
+    const populated = await populateCitation(
+      Citation.findById(existing._id)
+    ).lean();
+
+    // Notificar al tutor sobre la reagendación (async)
+    process.nextTick(() => {
+      (async () => {
+        try {
+          const result = await notificationService.sendCitationRescheduledNotification(populated);
+          if (result && result.dispatched > 0) {
+            console.log(
+              `[citations] Reschedule notification dispatched for citation ${populated._id} (${result.dispatched}/${result.tokens || 0})`
+            );
+          }
+        } catch (err) {
+          console.error(
+            `[citations] Background reschedule notification error for citation ${populated._id}: ${err.message}`
+          );
+        }
+      })();
+    });
+
+    res.status(200).json(populated);
+  } catch (error) {
+    next(error);
+  }
+};
+
+// =====================================================================
+// PUT /api/citations/:id
+// Actualiza campos de un citatorio. Body: { reason?, location?, type?, subject? }
+//
+// Solo el creator o admin pueden editar. Teacher solo puede editar
+// sus propios citatorios. No permite cambiar scheduledDate, student, creator.
+// Solo pending o confirmed pueden editarse.
+const updateCitation = async (req, res, next) => {
+  try {
+    const { id } = req.params;
+    const { reason, location, type, subject: subjectId } = req.body;
+
+    if (!mongoose.Types.ObjectId.isValid(id)) {
+      return res.status(404).json({ message: `No citation with id: ${id}` });
+    }
+
+    const existing = await Citation.findOne({
+      _id: id,
+      ...tenantFilter(req),
+    });
+    if (!existing) {
+      return res.status(404).json({ message: `No citation with id: ${id}` });
+    }
+
+    // Solo pending o confirmed pueden editarse
+    if (!["pending", "confirmed"].includes(existing.status)) {
+      return res.status(409).json({
+        message: `Cannot edit citation in status "${existing.status}". Only "pending" or "confirmed" citations can be edited.`,
+      });
+    }
+
+    // Teacher solo puede editar sus propios citatorios
+    if (req.payload.role === "teacher" && String(existing.creator) !== String(req.payload._id)) {
+      return res.status(403).json({
+        message: "You can only edit citations you created.",
+      });
+    }
+
+    // Validar reason si se envía
+    if (reason !== undefined) {
+      if (!reason || !String(reason).trim()) {
+        return res.status(400).json({ message: "reason cannot be empty." });
+      }
+      const reasonTrim = String(reason).trim();
+      if (reasonTrim.length > 1000) {
+        return res
+          .status(400)
+          .json({ message: "reason must be at most 1000 characters." });
+      }
+      existing.reason = reasonTrim;
+    }
+
+    // Validar location si se envía
+    if (location !== undefined) {
+      if (!location || !String(location).trim()) {
+        return res.status(400).json({ message: "location cannot be empty." });
+      }
+      const locationTrim = String(location).trim();
+      if (locationTrim.length > 200) {
+        return res
+          .status(400)
+          .json({ message: "location must be at most 200 characters." });
+      }
+      existing.location = locationTrim;
+    }
+
+    // Validar type si se envía
+    if (type !== undefined) {
+      if (!["academic", "behavioral", "administrative"].includes(type)) {
+        return res.status(400).json({
+          message:
+            'type must be "academic", "behavioral" or "administrative".',
+        });
+      }
+      existing.type = type;
+    }
+
+    // Validar subject si se envía (opcional, puede ser null para quitar)
+    if (subjectId !== undefined) {
+      if (subjectId === null) {
+        existing.subject = null;
+      } else {
+        if (!mongoose.Types.ObjectId.isValid(subjectId)) {
+          return res.status(400).json({ message: "Invalid subject id." });
+        }
+        const subject = await Subject.findOne({ _id: subjectId, school: existing.school })
+          .select("_id")
+          .lean();
+        if (!subject) {
+          return res
+            .status(404)
+            .json({ message: "Subject not found in this school." });
+        }
+        existing.subject = subject._id;
+      }
+    }
+
+    await existing.save();
+
+    const populated = await populateCitation(
+      Citation.findById(existing._id)
+    ).lean();
+    res.status(200).json(populated);
+  } catch (error) {
+    next(error);
+  }
+};
+
+// =====================================================================
+// PATCH /api/citations/:id/cancel
+// Cancela un citatorio. Body: { reason? }
+//
+// Solo el creator o admin pueden cancelar. Teacher solo puede cancelar
+// sus propios citatorios. Solo pending o confirmed pueden cancelarse.
+// Resetea rescheduleRequested a false.
+const cancelCitation = async (req, res, next) => {
+  try {
+    const { id } = req.params;
+
+    if (!mongoose.Types.ObjectId.isValid(id)) {
+      return res.status(404).json({ message: `No citation with id: ${id}` });
+    }
+
+    const existing = await Citation.findOne({
+      _id: id,
+      ...tenantFilter(req),
+    });
+    if (!existing) {
+      return res.status(404).json({ message: `No citation with id: ${id}` });
+    }
+
+    // Solo pending o confirmed pueden cancelarse
+    if (!["pending", "confirmed"].includes(existing.status)) {
+      return res.status(409).json({
+        message: `Cannot cancel citation in status "${existing.status}". Only "pending" or "confirmed" citations can be cancelled.`,
+      });
+    }
+
+    // Teacher solo puede cancelar sus propios citatorios
+    if (req.payload.role === "teacher" && String(existing.creator) !== String(req.payload._id)) {
+      return res.status(403).json({
+        message: "You can only cancel citations you created.",
+      });
+    }
+
+    existing.status = "cancelled";
+    existing.rescheduleRequested = false;
+    existing.rescheduleReason = null;
+    await existing.save();
+
+    const populated = await populateCitation(
+      Citation.findById(existing._id)
+    ).lean();
+
+    // Notificar al tutor sobre la cancelación (async)
+    process.nextTick(() => {
+      (async () => {
+        try {
+          const result = await notificationService.sendCitationCancelledNotification(populated);
+          if (result && result.dispatched > 0) {
+            console.log(
+              `[citations] Cancel notification dispatched for citation ${populated._id} (${result.dispatched}/${result.tokens || 0})`
+            );
+          }
+        } catch (err) {
+          console.error(
+            `[citations] Background cancel notification error for citation ${populated._id}: ${err.message}`
+          );
+        }
+      })();
+    });
+
+    res.status(200).json({
+      message: "Citation cancelled successfully.",
+      citation: populated,
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+// =====================================================================
+// GET /api/citations/me
+// Devuelve los citatorios creados por el maestro logueado.
+// Filtros opcionales: status, type, student, from, to, page, limit.
+const getMyCitations = async (req, res, next) => {
+  try {
+    const {
+      page = 1,
+      limit = 20,
+      status,
+      type,
+      student,
+      from,
+      to,
+    } = req.query;
+
+    const pageNum = Math.max(parseInt(page, 10) || 1, 1);
+    const limitNum = Math.min(Math.max(parseInt(limit, 10) || 20, 1), 100);
+    const skip = (pageNum - 1) * limitNum;
+
+    // Ciclo activo de la escuela.
+    const filter = {
+      creator: req.payload._id,
+      ...tenantFilter(req),
+    };
+
+    if (req.payload.schoolId) {
+      const activeSY = await resolveActiveSchoolYear(req.payload.schoolId);
+      if (activeSY) filter.schoolYear = activeSY;
+    }
+
+    if (status) {
+      if (!["pending", "confirmed", "completed", "no_show", "cancelled"].includes(status)) {
+        return res.status(400).json({
+          message:
+            'status must be "pending", "confirmed", "completed", "no_show" or "cancelled".',
+        });
+      }
+      filter.status = status;
+    }
+    if (type) {
+      if (!["academic", "behavioral", "administrative"].includes(type)) {
+        return res.status(400).json({
+          message:
+            'type must be "academic", "behavioral" or "administrative".',
+        });
+      }
+      filter.type = type;
+    }
+    if (student && mongoose.Types.ObjectId.isValid(student)) {
+      filter.student = student;
+    }
+    if (from || to) {
+      filter.scheduledDate = {};
+      if (from) {
+        const d = new Date(from);
+        if (Number.isNaN(d.getTime())) {
+          return res.status(400).json({ message: "from is not a valid date." });
+        }
+        filter.scheduledDate.$gte = d;
+      }
+      if (to) {
+        const d = new Date(to);
+        if (Number.isNaN(d.getTime())) {
+          return res.status(400).json({ message: "to is not a valid date." });
+        }
+        filter.scheduledDate.$lte = d;
+      }
+    }
+
+    const [items, total] = await Promise.all([
+      populateCitation(Citation.find(filter))
+        .sort({ scheduledDate: -1 })
+        .skip(skip)
+        .limit(limitNum),
+      Citation.countDocuments(filter),
+    ]);
+
+    await enrichWithGroupName(items);
+
+    res.status(200).json({
+      items,
+      total,
+      page: pageNum,
+      limit: limitNum,
+      pages: Math.ceil(total / limitNum) || 1,
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
 module.exports = {
   createCitation,
   getAllCitations,
   getCitationById,
   updateCitationStatus,
   deleteCitation,
+  getMyCitations,
+  rescheduleCitation,
+  updateCitation,
+  cancelCitation,
   REPORTER_ROLES,
   ADMIN_ROLES,
   STAFF_ROLES,

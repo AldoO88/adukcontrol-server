@@ -6,6 +6,7 @@
 //   - POST /auth/request-activation — solicitar OTP de activación (tutor)
 //   - POST /auth/activate-account   — verificar OTP y establecer password (tutor)
 //   - GET  /auth/verify             — decodificar JWT
+//   - PUT  /auth/change-password    — cambiar contraseña (cualquier usuario autenticado)
 const jwt = require("jsonwebtoken");
 const mongoose = require("mongoose");
 const User = require("../models/User.model");
@@ -41,6 +42,7 @@ const buildAuthResponse = (user) => ({
   phoneNumber: user.phoneNumber,
   school: user.school ? (user.school._id || user.school) : null,
   isActive: user.isActive,
+  sex: user.sex || null,
 });
 
 // POST /auth/signup
@@ -78,6 +80,7 @@ const signupController = async (req, res, next) => {
       phoneNumber,
       guardian_profile,
       student_ids,
+      sex,
     } = req.body;
 
     // === Validaciones universales ===
@@ -184,6 +187,7 @@ const signupController = async (req, res, next) => {
       role,
       school: school || null,
       phoneNumber: phoneNumber.trim(),
+      sex: sex || null,
     });
 
     // === Efecto secundario: crear Guardian si es tutor ===
@@ -196,6 +200,7 @@ const signupController = async (req, res, next) => {
         relationship: guardian_profile.relationship,
         phone: phoneNumber.trim(),
         students: validStudentIds,
+        sex: sex || null,
       });
 
       // Sincronizar el lado Student.guardians
@@ -542,6 +547,81 @@ const verifyController = (req, res, next) => {
   }
 };
 
+// POST /auth/fcm-token
+// Register/update FCM token for staff users (teachers, admin, etc.)
+// Allows staff to receive push notifications (e.g., when guardian confirms
+// or requests reschedule of a citation).
+const registerStaffFcmToken = async (req, res, next) => {
+  try {
+    const { fcm_token } = req.body;
+
+    if (!fcm_token || !String(fcm_token).trim()) {
+      return res.status(400).json({ message: "fcm_token is required." });
+    }
+
+    const user = await User.findById(req.payload._id);
+    if (!user) {
+      return res.status(404).json({ message: "User not found." });
+    }
+
+    user.fcm_token = String(fcm_token).trim();
+    await user.save();
+
+    res.status(200).json({ message: "FCM token registered successfully." });
+  } catch (error) {
+    next(error);
+  }
+};
+
+// =====================================================================
+// PUT /auth/change-password
+// Cambia la contraseña del usuario autenticado.
+// Body: { currentPassword, newPassword }
+// =====================================================================
+const changePasswordController = async (req, res, next) => {
+  try {
+    const { currentPassword, newPassword } = req.body;
+
+    // 1. Validar campos requeridos.
+    if (!currentPassword || !String(currentPassword).trim()) {
+      return res.status(400).json({ message: "La contraseña actual es obligatoria." });
+    }
+    if (!newPassword || !String(newPassword).trim()) {
+      return res.status(400).json({ message: "La nueva contraseña es obligatoria." });
+    }
+
+    // 2. Validar longitud mínima.
+    if (String(newPassword).length < 8) {
+      return res.status(400).json({ message: "La nueva contraseña debe tener al menos 8 caracteres." });
+    }
+
+    // 3. Validar que la nueva sea diferente a la actual.
+    if (currentPassword === newPassword) {
+      return res.status(400).json({ message: "La nueva contraseña debe ser diferente a la actual." });
+    }
+
+    // 4. Buscar el usuario con password (select: false por defecto).
+    const user = await User.findById(req.payload._id).select("+password");
+    if (!user) {
+      return res.status(404).json({ message: "Usuario no encontrado." });
+    }
+
+    // 5. Verificar la contraseña actual.
+    const isMatch = await user.comparePassword(currentPassword);
+    if (!isMatch) {
+      return res.status(401).json({ message: "La contraseña actual es incorrecta." });
+    }
+
+    // 6. Asignar nueva contraseña y guardar (bcrypt hashea en pre-save hook).
+    user.password = newPassword;
+    await user.save();
+
+    res.status(200).json({ message: "Contraseña actualizada correctamente." });
+  } catch (error) {
+    next(error);
+  }
+};
+
 module.exports = {
   signupController,
   loginController,
@@ -550,4 +630,6 @@ module.exports = {
   verifyOtpController,
   activateAccountController,
   verifyController,
+  registerStaffFcmToken,
+  changePasswordController,
 };

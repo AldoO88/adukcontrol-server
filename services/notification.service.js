@@ -11,6 +11,7 @@ const fs = require("fs"); // Sistema de archivos
 const admin = require("firebase-admin"); // SDK de Firebase Admin
 const Guardian = require("../models/Guardian.model"); // Modelo de tutores
 const Student = require("../models/Student.model"); // Modelo de estudiantes
+const User = require("../models/User.model"); // Modelo de usuarios (para notificaciones a staff)
 
 // Bandera: true después de inicializar Firebase correctamente
 let initialized = false;
@@ -474,6 +475,198 @@ const sendAbsenceNotification = async (student, attendanceLog) => {
   return dispatchToGuardians(guardians, payload, "attendance");
 };
 
+// Notifica a los tutores de un estudiante sobre un citatorio reagendado.
+// `citation` debe traer el `student` populado.
+// Devuelve { dispatched, failed, tokens, invalidated } o { dispatched: 0, reason: "..." }.
+const sendCitationRescheduledNotification = async (citation) => {
+  const studentId = citation.student?._id || citation.student;
+  const studentName = citation.student
+    ? `${citation.student.first_name || ""} ${citation.student.last_name || ""}`.trim()
+    : "Alumno";
+
+  const guardians = await Guardian.find({
+    students: studentId,
+    school: citation.school,
+  }).select("fcm_token phone name").lean();
+
+  if (!guardians || guardians.length === 0) {
+    return { dispatched: 0, reason: "no_guardians" };
+  }
+
+  const dateStr = new Date(citation.scheduledDate).toLocaleString("es-MX", {
+    weekday: "short",
+    day: "2-digit",
+    month: "short",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+
+  const payload = {
+    title: `Citatorio reagendado: ${studentName}`,
+    body: `Nueva fecha: ${dateStr}. Lugar: ${citation.location || "No especificado"}`,
+    channelId: "eduk_citations_channel",
+    data: {
+      kind: "citation_rescheduled",
+      citation_id: String(citation._id),
+      student_id: String(studentId),
+      scheduledDate: String(citation.scheduledDate),
+      type: citation.type,
+      status: citation.status,
+    },
+  };
+
+  console.log(
+    `[citations] Dispatching reschedule notification for ${studentName} to ${guardians.length} guardian(s)`
+  );
+  return dispatchToGuardians(guardians, payload, "citations");
+};
+
+// Notifica a los tutores de un estudiante sobre un citatorio cancelado.
+// `citation` debe traer el `student` populado.
+// Devuelve { dispatched, failed, tokens, invalidated } o { dispatched: 0, reason: "..." }.
+const sendCitationCancelledNotification = async (citation) => {
+  const studentId = citation.student?._id || citation.student;
+  const studentName = citation.student
+    ? `${citation.student.first_name || ""} ${citation.student.last_name || ""}`.trim()
+    : "Alumno";
+
+  const guardians = await Guardian.find({
+    students: studentId,
+    school: citation.school,
+  }).select("fcm_token phone name").lean();
+
+  if (!guardians || guardians.length === 0) {
+    return { dispatched: 0, reason: "no_guardians" };
+  }
+
+  const dateStr = new Date(citation.scheduledDate).toLocaleString("es-MX", {
+    weekday: "short",
+    day: "2-digit",
+    month: "short",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+
+  const payload = {
+    title: `Citatorio cancelado: ${studentName}`,
+    body: `La cita del ${dateStr} ha sido cancelada.`,
+    channelId: "eduk_citations_channel",
+    data: {
+      kind: "citation_cancelled",
+      citation_id: String(citation._id),
+      student_id: String(studentId),
+      scheduledDate: String(citation.scheduledDate),
+      type: citation.type,
+      status: citation.status,
+    },
+  };
+
+  console.log(
+    `[citations] Dispatching cancel notification for ${studentName} to ${guardians.length} guardian(s)`
+  );
+  return dispatchToGuardians(guardians, payload, "citations");
+};
+
+// =====================================================================
+// Notificaciones al STAFF (teacher/admin) cuando un tutor actuó sobre un citatorio
+// =====================================================================
+
+// Helper interno: envía un push a un solo staff user por su fcm_token.
+// Devuelve { dispatched: 1|0, reason?: string }.
+const sendToStaffUser = async (user, payload) => {
+  if (!user || !user.fcm_token) {
+    return { dispatched: 0, reason: "no_fcm_token" };
+  }
+
+  try {
+    await sendToTokens([user.fcm_token], payload);
+    return { dispatched: 1 };
+  } catch (err) {
+    console.error(
+      `[notifications] Error sending to staff ${user._id}: ${err.message}`
+    );
+    return { dispatched: 0, reason: err.message };
+  }
+};
+
+// Notifica al staff creator que un tutor confirmó un citatorio.
+// `citation` debe traer el student populado. `guardianName` es el nombre del tutor.
+const sendCitationConfirmedNotification = async (citation, guardianName) => {
+  const studentName = citation.student
+    ? `${citation.student.first_name || ""} ${citation.student.last_name || ""}`.trim()
+    : "Alumno";
+
+  // Buscar al creator (staff) para obtener su fcm_token
+  const creator = await User.findById(citation.creator)
+    .select("fcm_token name last_name")
+    .lean();
+
+  if (!creator) {
+    return { dispatched: 0, reason: "creator_not_found" };
+  }
+
+  const dateStr = new Date(citation.scheduledDate).toLocaleString("es-MX", {
+    weekday: "short",
+    day: "2-digit",
+    month: "short",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+
+  const payload = {
+    title: `Citatorio confirmado: ${studentName}`,
+    body: `${guardianName} confirmó asistencia para ${dateStr}.`,
+    channelId: "eduk_citations_channel",
+    data: {
+      kind: "citation_confirmed",
+      citation_id: String(citation._id),
+      student_id: String(citation.student?._id || citation.student),
+      scheduledDate: String(citation.scheduledDate),
+      status: "confirmed",
+    },
+  };
+
+  console.log(
+    `[citations] Dispatching confirmed notification for citation ${citation._id} to staff ${creator._id}`
+  );
+  return sendToStaffUser(creator, payload);
+};
+
+// Notifica al staff creator que un tutor solicita reagendar un citatorio.
+// `citation` debe traer el student populado. `guardianName` es el nombre del tutor.
+const sendCitationRescheduleRequestNotification = async (citation, guardianName, reason) => {
+  const studentName = citation.student
+    ? `${citation.student.first_name || ""} ${citation.student.last_name || ""}`.trim()
+    : "Alumno";
+
+  // Buscar al creator (staff) para obtener su fcm_token
+  const creator = await User.findById(citation.creator)
+    .select("fcm_token name last_name")
+    .lean();
+
+  if (!creator) {
+    return { dispatched: 0, reason: "creator_not_found" };
+  }
+
+  const payload = {
+    title: `Solicitud de reagendación`,
+    body: `${guardianName} solicita reagendar cita de ${studentName}. Razón: ${reason}`,
+    channelId: "eduk_citations_channel",
+    data: {
+      kind: "citation_reschedule_request",
+      citation_id: String(citation._id),
+      student_id: String(citation.student?._id || citation.student),
+      scheduledDate: String(citation.scheduledDate),
+      reason: reason,
+    },
+  };
+
+  console.log(
+    `[citations] Dispatching reschedule request notification for citation ${citation._id} to staff ${creator._id}`
+  );
+  return sendToStaffUser(creator, payload);
+};
+
 module.exports = {
   initializeFirebase,
   isFirebaseReady,
@@ -481,5 +674,9 @@ module.exports = {
   sendAttendanceNotification,
   sendAbsenceNotification,
   sendCitationNotification,
+  sendCitationRescheduledNotification,
+  sendCitationCancelledNotification,
+  sendCitationConfirmedNotification,
+  sendCitationRescheduleRequestNotification,
   sendAnnouncementNotification,
 };
