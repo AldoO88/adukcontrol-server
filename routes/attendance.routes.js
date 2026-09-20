@@ -6,6 +6,7 @@ const rateLimit = require("express-rate-limit");
 const {
   deviceTriggerController,
   getAttendanceLogsController,
+  manualOverrideController,
 } = require("../controllers/attendance.controller");
 const {
   markAbsencesController,
@@ -61,8 +62,17 @@ router.post(
 router.put(
   "/logs/:logId/justify",
   isAuthenticated,
-  authorize("admin", "registrar"),
+  authorize("admin", "registrar", "social_worker"),
   justifyAttendanceLogController
+);
+
+// POST /api/attendance/manual-override
+// Override manual de asistencia. Auth: JWT + admin/registrar/principal/prefect/super_admin.
+router.post(
+  "/manual-override",
+  isAuthenticated,
+  authorize("admin", "registrar", "principal", "prefect", "super_admin"),
+  manualOverrideController
 );
 
 module.exports = router;

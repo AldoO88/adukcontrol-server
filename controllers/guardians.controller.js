@@ -118,7 +118,7 @@ const getMyGuardians = async (req, res, next) => {
 // Body: { name, phone, relationship, school?, user_id?, students? }
 const createGuardian = async (req, res, next) => {
   try {
-    const { name, phone, relationship, user_id, students } = req.body;
+    const { name, phone, relationship, user_id, students, whatsapp_opt_in } = req.body;
 
     if (!name || !phone || !relationship) {
       return res
@@ -158,6 +158,18 @@ const createGuardian = async (req, res, next) => {
       }
     }
 
+    // Opt-in WhatsApp: si el admin lo activa al crear el tutor, grabamos
+    // timestamp + source para auditoría. Si no viene o es false, queda
+    // opted_in=false (el tutor lo activa después vía profile si quiere).
+    const notificationPrefs = {};
+    if (whatsapp_opt_in === true || whatsapp_opt_in === "true") {
+      notificationPrefs.whatsapp = {
+        opted_in: true,
+        opted_in_at: new Date(),
+        source: "admin_form",
+      };
+    }
+
     const newGuardian = await Guardian.create({
       school,
       name,
@@ -165,10 +177,29 @@ const createGuardian = async (req, res, next) => {
       relationship,
       user_id: user_id || null,
       students: validStudents,
+      ...(Object.keys(notificationPrefs).length > 0
+        ? { notification_prefs: notificationPrefs }
+        : {}),
     });
 
-    // Si tiene user_id, mantener simetría: agregar este guardian al User no aplica
-    // porque User ya no tiene tutor_of_students. La fuente de verdad es Guardian.
+    // Si tiene user_id, sincronizar el opt-in también en User (best-effort).
+    if (user_id && notificationPrefs.whatsapp) {
+      try {
+        await User.updateOne(
+          { _id: user_id },
+          {
+            $set: {
+              "notification_prefs.whatsapp": notificationPrefs.whatsapp,
+            },
+          }
+        );
+      } catch (syncErr) {
+        console.warn(
+          "[createGuardian] Failed to sync User notification_prefs:",
+          syncErr.message
+        );
+      }
+    }
 
     // Si tiene students, agregar este guardian al array guardians de cada Student
     if (validStudents.length > 0) {
@@ -293,9 +324,24 @@ const updateGuardian = async (req, res, next) => {
     }
 
     // Aplicar el resto de cambios (excepto students, ya manejado)
-    const { students: _ignore, ...rest } = req.body;
+    const { students: _ignore, notification_prefs: _ignorePrefs, ...rest } = req.body;
     Object.assign(guardian, rest);
     await guardian.save();
+
+    // Opt-in WhatsApp: aplicar explícitamente (no vía Object.assign porque
+    // notification_prefs es un subdoc y se debe respetar la forma canónica).
+    if (req.body.whatsapp_opt_in !== undefined) {
+      const newOptedIn = req.body.whatsapp_opt_in === true || req.body.whatsapp_opt_in === "true";
+      guardian.notification_prefs = {
+        ...(guardian.notification_prefs?.toObject?.() || guardian.notification_prefs || {}),
+        whatsapp: {
+          opted_in: newOptedIn,
+          opted_in_at: newOptedIn ? new Date() : null,
+          source: newOptedIn ? "admin_form" : "self_profile",
+        },
+      };
+      await guardian.save();
+    }
 
     res.status(200).json(guardian);
   } catch (error) {
@@ -1127,6 +1173,7 @@ const getMyStudentAttendanceHistory = async (req, res, next) => {
         return d.toLocaleDateString("es-MX", {
           month: "short",
           day: "numeric",
+          year: "numeric",
         });
       };
 

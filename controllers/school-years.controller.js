@@ -204,3 +204,175 @@ module.exports = {
   deleteSchoolYear,
   activateSchoolYear,
 };
+
+// POST /api/school-years/:schoolYearId/clone
+// Clona la configuración del ciclo anterior al nuevo ciclo.
+// Copia: SchoolShifts, TeacherSubjects, Groups, GradingPeriods, ClassSchedules.
+const SchoolShift = require("../models/SchoolShift.model");
+const TeacherSubject = require("../models/TeacherSubject.model");
+const Group = require("../models/Group.model");
+const GradingPeriod = require("../models/GradingPeriod.model");
+const ClassSchedule = require("../models/ClassSchedule.model");
+
+const cloneSchoolYear = async (req, res, next) => {
+  try {
+    const { schoolYearId } = req.params;
+    const { sourceSchoolYearId } = req.body;
+
+    if (!mongoose.Types.ObjectId.isValid(schoolYearId)) {
+      return res
+        .status(404)
+        .json({ message: `No school year with id: ${schoolYearId}` });
+    }
+
+    if (!sourceSchoolYearId || !mongoose.Types.ObjectId.isValid(sourceSchoolYearId)) {
+      return res
+        .status(400)
+        .json({ message: "sourceSchoolYearId is required and must be a valid ObjectId." });
+    }
+
+    const targetYear = await SchoolYear.findOne({
+      _id: schoolYearId,
+      ...tenantFilter(req),
+    });
+
+    if (!targetYear) {
+      return res
+        .status(404)
+        .json({ message: `No school year with id: ${schoolYearId}` });
+    }
+
+    const sourceYear = await SchoolYear.findOne({
+      _id: sourceSchoolYearId,
+      ...tenantFilter(req),
+    });
+
+    if (!sourceYear) {
+      return res
+        .status(404)
+        .json({ message: `Source school year not found or not in same school.` });
+    }
+
+    if (sourceYear.school.toString() !== targetYear.school.toString()) {
+      return res
+        .status(400)
+        .json({ message: "Source and target school years must belong to the same school." });
+    }
+
+    const schoolId = targetYear.school;
+    const cloned = {};
+
+    // 1. Clonar SchoolShifts
+    const sourceShifts = await SchoolShift.find({ school: schoolId, school_year_id: sourceSchoolYearId });
+    if (sourceShifts.length > 0) {
+      const shiftInserts = sourceShifts.map((s) => ({
+        school: schoolId,
+        school_year_id: schoolYearId,
+        name: s.name,
+        shift: s.shift,
+        startTime: s.startTime,
+        endTime: s.endTime,
+        moduleDurationMinutes: s.moduleDurationMinutes,
+        gracePeriodMinutes: s.gracePeriodMinutes,
+        timeBlocks: s.timeBlocks.map((tb) => ({
+          name: tb.name,
+          startTime: tb.startTime,
+          endTime: tb.endTime,
+          isBreak: tb.isBreak,
+          order: tb.order,
+        })),
+      }));
+      const insertedShifts = await SchoolShift.insertMany(shiftInserts);
+      cloned.shifts = insertedShifts.length;
+
+      // Mapear viejos IDs a nuevos IDs para ClassSchedule
+      const shiftIdMap = {};
+      sourceShifts.forEach((oldS, i) => {
+        shiftIdMap[oldS._id.toString()] = insertedShifts[i]._id.toString();
+      });
+
+      // 2. Clonar ClassSchedules (depende de shifts)
+      const sourceSchedules = await ClassSchedule.find({
+        school_year_id: sourceSchoolYearId,
+      }).lean();
+      if (sourceSchedules.length > 0) {
+        const scheduleInserts = sourceSchedules.map((cs) => ({
+          school: schoolId,
+          school_year_id: schoolYearId,
+          group_id: cs.group_id,
+          subject_id: cs.subject_id,
+          teacher_id: cs.teacher_id,
+          school_shift_id: shiftIdMap[cs.school_shift_id?.toString()] || cs.school_shift_id,
+          scheduleSlots: cs.scheduleSlots,
+        }));
+        const insertedSchedules = await ClassSchedule.insertMany(scheduleInserts);
+        cloned.schedules = insertedSchedules.length;
+      }
+    }
+
+    // 3. Clonar Groups
+    const sourceGroups = await Group.find({ school: schoolId, school_year_id: sourceSchoolYearId });
+    if (sourceGroups.length > 0) {
+      const groupInserts = sourceGroups.map((g) => ({
+        school: schoolId,
+        school_year_id: schoolYearId,
+        grade: g.grade,
+        section: g.section,
+        type: g.type,
+        shift: g.shift,
+        head_teacher_id: g.head_teacher_id,
+      }));
+      const insertedGroups = await Group.insertMany(groupInserts);
+      cloned.groups = insertedGroups.length;
+
+      // Mapear viejos IDs a nuevos IDs para TeacherSubject
+      const groupIdMap = {};
+      sourceGroups.forEach((oldG, i) => {
+        groupIdMap[oldG._id.toString()] = insertedGroups[i]._id.toString();
+      });
+
+      // 4. Clonar TeacherSubjects (depende de groups)
+      const sourceTeacherSubjects = await TeacherSubject.find({
+        school: schoolId,
+        school_year_id: sourceSchoolYearId,
+      });
+      if (sourceTeacherSubjects.length > 0) {
+        const tsInserts = sourceTeacherSubjects.map((ts) => ({
+          school: schoolId,
+          school_year_id: schoolYearId,
+          teacher_id: ts.teacher_id,
+          subject_id: ts.subject_id,
+          group_id: groupIdMap[ts.group_id?.toString()] || ts.group_id,
+        }));
+        const insertedTS = await TeacherSubject.insertMany(tsInserts);
+        cloned.teacherSubjects = insertedTS.length;
+      }
+    }
+
+    // 5. Clonar GradingPeriods
+    const sourcePeriods = await GradingPeriod.find({ school: schoolId, school_year_id: sourceSchoolYearId });
+    if (sourcePeriods.length > 0) {
+      const periodInserts = sourcePeriods.map((p) => ({
+        school: schoolId,
+        school_year_id: schoolYearId,
+        name: p.name,
+        order: p.order,
+        startDate: p.startDate,
+        endDate: p.endDate,
+        isClosed: false,
+      }));
+      const insertedPeriods = await GradingPeriod.insertMany(periodInserts);
+      cloned.periods = insertedPeriods.length;
+    }
+
+    res.status(201).json({
+      message: "School year cloned successfully.",
+      cloned,
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+// Agregar al module.exports
+module.exports.cloneSchoolYear = cloneSchoolYear;

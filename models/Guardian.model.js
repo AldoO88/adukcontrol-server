@@ -69,6 +69,21 @@ const guardianSchema = new Schema(
       ref: "Student",
       default: [],
     },
+    // Preferencias de notificación por canal. Misma estructura que en
+    // User. Para tutores el opt-in se captura normalmente al crearse
+    // el Guardian vía admin (la escuela informa al padre al darle
+    // de alta que va a recibir códigos por WhatsApp).
+    notification_prefs: {
+      whatsapp: {
+        opted_in: { type: Boolean, default: false },
+        opted_in_at: { type: Date, default: null },
+        source: {
+          type: String,
+          enum: ["admin_form", "self_profile", "imported_seed", "signup", "unknown"],
+          default: null,
+        },
+      },
+    },
   },
   {
     timestamps: true,

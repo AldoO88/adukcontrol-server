@@ -9,6 +9,7 @@ const {
   updateSchoolYear,
   deleteSchoolYear,
   activateSchoolYear,
+  cloneSchoolYear,
 } = require("../controllers/school-years.controller");
 const { isAuthenticated } = require("../middleware/jwt.middleware");
 const { authorize } = require("../middleware/authorize.middleware");
@@ -49,6 +50,13 @@ router.post(
   "/:schoolYearId/activate",
   authorize(...writeRoles),
   activateSchoolYear
+);
+
+// POST /api/school-years/:schoolYearId/clone — clona configuración del ciclo anterior
+router.post(
+  "/:schoolYearId/clone",
+  authorize(...writeRoles),
+  cloneSchoolYear
 );
 
 module.exports = router;

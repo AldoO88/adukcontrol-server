@@ -176,11 +176,39 @@ const getGroupStudents = async (req, res, next) => {
       return res.status(404).json({ message: `No group with id: ${groupId}` });
     }
 
-    // Buscar todas las Enrollments de este grupo
-    const enrollments = await Enrollment.find({ group_id: groupId })
-      .populate("student_id", "controlNumber first_name last_name status photoUrl current_group_id")
-      .populate("school_year_id", "name startDate endDate isActive")
-      .sort({ createdAt: -1 });
+    // Buscar alumnos del grupo.
+    // Para grupos regulares: via Enrollment (histórico).
+    // Para grupos taller: via Student.workshop_group_id.
+    let items = [];
+
+    if (group.type === "taller") {
+      // Grupo taller: alumnos asignados via Student.workshop_group_id
+      const tallerStudents = await Student.find({
+        school: group.school,
+        status: "active",
+        workshop_group_id: groupId,
+      })
+        .select("_id")
+        .lean();
+
+      const tallerStudentIds = tallerStudents.map((s) => s._id);
+
+      if (tallerStudentIds.length > 0) {
+        items = await Enrollment.find({
+          student_id: { $in: tallerStudentIds },
+          cycle_status: "enrolled",
+        })
+          .populate("student_id", "controlNumber first_name last_name status photoUrl current_group_id")
+          .populate("school_year_id", "name startDate endDate isActive")
+          .sort({ createdAt: -1 });
+      }
+    } else {
+      // Grupo regular: buscar alumnos via Enrollment (histórico)
+      items = await Enrollment.find({ group_id: groupId })
+        .populate("student_id", "controlNumber first_name last_name status photoUrl current_group_id")
+        .populate("school_year_id", "name startDate endDate isActive")
+        .sort({ createdAt: -1 });
+    }
 
     res.status(200).json({
       group: {
@@ -190,8 +218,8 @@ const getGroupStudents = async (req, res, next) => {
         school_year_id: group.school_year_id,
         shift: group.shift,
       },
-      items: enrollments,
-      total: enrollments.length,
+      items,
+      total: items.length,
     });
   } catch (error) {
     next(error);

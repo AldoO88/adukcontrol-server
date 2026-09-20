@@ -707,12 +707,14 @@ const deleteAnnouncement = async (req, res, next) => {
 //   - tab="mine"       → avisos que él publicó (sender = yo)
 //   - tab="general"    → avisos generales de la escuela (targetType = "general")
 //   - sin tab / otro   → ambos combinados (mis publicaciones + generales)
-// Filtros opcionales: priority, page, limit.
+// Filtros opcionales: priority, from, to, page, limit.
 const getMyAnnouncements = async (req, res, next) => {
   try {
     const {
       tab,
       priority,
+      from,
+      to,
       page = 1,
       limit = 20,
     } = req.query;
@@ -742,6 +744,24 @@ const getMyAnnouncements = async (req, res, next) => {
           .json({ message: 'priority must be "informative" or "urgent".' });
       }
       baseFilter.priority = priority;
+    }
+
+    if (from || to) {
+      baseFilter.createdAt = {};
+      if (from) {
+        const d = new Date(from);
+        if (Number.isNaN(d.getTime())) {
+          return res.status(400).json({ message: "from is not a valid date." });
+        }
+        baseFilter.createdAt.$gte = d;
+      }
+      if (to) {
+        const d = new Date(to);
+        if (Number.isNaN(d.getTime())) {
+          return res.status(400).json({ message: "to is not a valid date." });
+        }
+        baseFilter.createdAt.$lte = d;
+      }
     }
 
     // Construir filtro según el tab.

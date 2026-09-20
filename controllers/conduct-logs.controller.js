@@ -87,12 +87,30 @@ const createLog = async (req, res, next) => {
       }
     }
 
-    // override opcional: validar tipo y signo si viene
+    // override opcional: validar tipo, signo y rango si viene
     if (points_impact_override !== undefined && points_impact_override !== null) {
       if (typeof points_impact_override !== "number" || points_impact_override < 0) {
         return res.status(400).json({
           message: "points_impact_override must be a non-negative number.",
         });
+      }
+
+      // Validar rango permitido según eventType y severity
+      const OVERRIDES_RANGES = {
+        minor: { min: 1, max: 5 },
+        moderate: { min: 5, max: 9 },
+        severe: { min: 10, max: 18 },
+        merit: { min: 1, max: 5 },
+      };
+
+      const rangeKey = eventType === "merit" ? "merit" : severity;
+      const range = OVERRIDES_RANGES[rangeKey];
+      if (range) {
+        if (points_impact_override < range.min || points_impact_override > range.max) {
+          return res.status(400).json({
+            message: `points_impact_override must be between ${range.min} and ${range.max} for ${rangeKey}.`,
+          });
+        }
       }
     }
 
@@ -198,8 +216,12 @@ const getAllLogs = async (req, res, next) => {
     const skip = (pageNum - 1) * limitNum;
     const [items, total] = await Promise.all([
       ConductLog.find(filter)
-        .populate("reported_by", "name email role")
-        .populate("student_id", "controlNumber first_name last_name")
+        .populate("reported_by", "name last_name email role")
+        .populate({
+          path: "student_id",
+          select: "controlNumber first_name last_name current_group_id",
+          populate: { path: "current_group_id", select: "grade section" },
+        })
         .populate("school_year_id", "name startDate endDate isActive")
         .sort({ incident_date: -1, createdAt: -1 })
         .skip(skip)
@@ -230,8 +252,12 @@ const getLogById = async (req, res, next) => {
       _id: logId,
       ...tenantFilter(req),
     })
-      .populate("reported_by", "name email role")
-      .populate("student_id", "controlNumber first_name last_name")
+      .populate("reported_by", "name last_name email role")
+      .populate({
+        path: "student_id",
+        select: "controlNumber first_name last_name current_group_id",
+        populate: { path: "current_group_id", select: "grade section" },
+      })
       .populate("school_year_id", "name startDate endDate isActive");
     if (!log) {
       return res.status(404).json({ message: `No log with id: ${logId}` });
@@ -242,9 +268,69 @@ const getLogById = async (req, res, next) => {
   }
 };
 
+// PATCH /api/conduct-logs/:logId
+// Actualiza la descripción de un reporte de conducta.
+// Permiso: solo el creador del reporte (reported_by).
+// Solo permite editar reportes con status "active".
+const updateLog = async (req, res, next) => {
+  try {
+    const { logId } = req.params;
+    const { description } = req.body;
+
+    if (!mongoose.Types.ObjectId.isValid(logId)) {
+      return res.status(404).json({ message: `No log with id: ${logId}` });
+    }
+
+    const log = await ConductLog.findOne({
+      _id: logId,
+      ...tenantFilter(req),
+    });
+    if (!log) {
+      return res.status(404).json({ message: `No log with id: ${logId}` });
+    }
+
+    // Solo el creador puede editar
+    if (log.reported_by?.toString() !== req.payload._id) {
+      return res.status(403).json({
+        message: "Solo el creador del reporte puede editarlo.",
+      });
+    }
+
+    // Solo se pueden editar reportes activos
+    if (log.status !== "active") {
+      return res.status(400).json({
+        message: "No se puede editar un reporte cancelado.",
+      });
+    }
+
+    // Actualizar descripción
+    if (description !== undefined) {
+      log.description = String(description).trim() || null;
+    }
+
+    await log.save();
+
+    // Invalidar cache del dashboard de los tutores
+    await invalidateStudentDashboardCache(log.student_id);
+
+    const populated = await ConductLog.findById(log._id)
+      .populate("reported_by", "name email role")
+      .populate("student_id", "controlNumber first_name last_name")
+      .populate("school_year_id", "name startDate endDate isActive");
+
+    res.status(200).json({
+      message: "Reporte actualizado exitosamente.",
+      log: populated,
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
 // PUT /api/conduct-logs/:logId/cancel
 // Soft-cancel: cambia status a "cancelled". NO elimina el documento
 // (auditoría). El KPI deja de contarlo.
+// Permiso: admin/principal/registrar/super_admin O el creador del reporte.
 const cancelLog = async (req, res, next) => {
   try {
     const { logId } = req.params;
@@ -265,6 +351,15 @@ const cancelLog = async (req, res, next) => {
       return res
         .status(400)
         .json({ message: "Log is already cancelled." });
+    }
+
+    // Verificar permiso: rol autorizado O creador del reporte
+    const isCreator = log.reported_by?.toString() === req.payload._id;
+    const isAuthorizedRole = CANCEL_ROLES.includes(req.payload.role);
+    if (!isCreator && !isAuthorizedRole) {
+      return res.status(403).json({
+        message: "No tienes permiso para cancelar este reporte.",
+      });
     }
 
     log.status = "cancelled";
@@ -414,6 +509,7 @@ module.exports = {
   createLog,
   getAllLogs,
   getLogById,
+  updateLog,
   cancelLog,
   deleteLog,
   getMyStudentLogs,

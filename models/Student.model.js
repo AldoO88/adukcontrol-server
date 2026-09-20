@@ -142,6 +142,287 @@ const studentSchema = new Schema(
       },
       default: "active",
     },
+    // === Datos personales adicionales (consultados por prefecto/tutor) ===
+    // Tipo de sangre del alumno (ej. "A+", "O-", "B+"). Opcional.
+    blood_type: {
+      type: String,
+      trim: true,
+      default: null,
+    },
+    // Dirección completa del alumno. Opcional.
+    address: {
+      type: String,
+      trim: true,
+      default: null,
+    },
+    // Teléfono del alumno (si aplica). Opcional.
+    phone: {
+      type: String,
+      trim: true,
+      default: null,
+    },
+    // Fecha de nacimiento del alumno. Opcional.
+    date_of_birth: {
+      type: Date,
+      default: null,
+    },
+    // Notas médicas: alergias, condiciones, medicamentos, etc. Opcional.
+    medical_notes: {
+      type: String,
+      trim: true,
+      default: null,
+    },
+    // === Ficha de Salud e Inclusión (trabajo social) =================
+    // Información de salud, inclusión y contacto de emergencia del alumno.
+    // Gestionada por el trabajador social vía PATCH /api/students/:id/health.
+    health_inclusion: {
+      // Estilo de aprendizaje del alumno
+      learning_style: {
+        type: String,
+        enum: {
+          values: ["visual", "auditivo", "kinestesico", "mixto", null],
+          message: "learning_style must be: visual, auditivo, kinestesico or mixto.",
+        },
+        default: null,
+      },
+      // Descripción libre del estilo de aprendizaje
+      style_hint: {
+        type: String,
+        trim: true,
+        maxlength: 500,
+        default: null,
+      },
+      // Diagnóstico principal (TDAH, Tea, Discalculia, etc.)
+      diagnosis: {
+        type: String,
+        trim: true,
+        maxlength: 500,
+        default: null,
+      },
+      // Tipo de discapacidad
+      disability_type: {
+        type: String,
+        enum: {
+          values: ["cognitiva", "fisica", "sensorial", "multiple", "ninguna", null],
+          message: "disability_type must be: cognitiva, fisica, sensorial, multiple or ninguna.",
+        },
+        default: null,
+      },
+      // Severidad de la discapacidad
+      disability_severity: {
+        type: String,
+        enum: {
+          values: ["leve", "moderada", "severa", "", null],
+          message: "disability_severity must be: leve, moderada or severa.",
+        },
+        default: null,
+      },
+      // Condiciones médicas (asma, epilepsia, diabetes, etc.)
+      medical_conditions: {
+        type: [String],
+        default: [],
+      },
+      // Medicamentos actuales
+      medications: {
+        type: [String],
+        default: [],
+      },
+      // Alergias y cuidados especiales
+      allergies: {
+        type: String,
+        trim: true,
+        maxlength: 1000,
+        default: null,
+      },
+      // Derechohabiencia: institución de salud a la que está afiliado
+      health_insurance: {
+        type: String,
+        trim: true,
+        maxlength: 100,
+        default: null,
+      },
+      // Autorizaciones
+      vaccination_authorization: {
+        type: Boolean,
+        default: false,
+      },
+      protection_civil_authorization: {
+        type: Boolean,
+        default: false,
+      },
+      // === Datos Familiares y Socioeconómicos ==============================
+      // Estructura del hogar del alumno
+      family_socioeconomic: {
+        // Miembros del hogar
+        family_members: [
+          {
+            name: {
+              type: String,
+              trim: true,
+              maxlength: 200,
+            },
+            relationship: {
+              type: String,
+              trim: true,
+              maxlength: 100,
+            },
+            age: {
+              type: Number,
+              min: 0,
+              max: 120,
+            },
+            occupation: {
+              type: String,
+              trim: true,
+              maxlength: 200,
+            },
+            education_level: {
+              type: String,
+              trim: true,
+              maxlength: 100,
+            },
+          },
+        ],
+        // Dinámica familiar (textarea libre)
+        family_dynamics: {
+          type: String,
+          trim: true,
+          maxlength: 2000,
+          default: null,
+        },
+        // Ingreso mensual familiar aproximado
+        monthly_income: {
+          type: String,
+          trim: true,
+          maxlength: 100,
+          default: null,
+        },
+        // Fuentes de ingreso
+        income_sources: {
+          type: String,
+          trim: true,
+          maxlength: 1000,
+          default: null,
+        },
+        // Tipo de tenencia de vivienda
+        housing_type: {
+          type: String,
+          trim: true,
+          maxlength: 100,
+          default: null,
+        },
+        // Materiales de construcción
+        housing_materials: {
+          type: String,
+          trim: true,
+          maxlength: 500,
+          default: null,
+        },
+        // Disponibilidad de servicios básicos
+        basic_services: {
+          type: String,
+          trim: true,
+          maxlength: 500,
+          default: null,
+        },
+      },
+      // === Contactos de Emergencia (array) =================================
+      emergency_contacts: [
+        {
+          name: {
+            type: String,
+            trim: true,
+            maxlength: 200,
+          },
+          phone: {
+            type: String,
+            trim: true,
+            maxlength: 20,
+          },
+          relationship: {
+            type: String,
+            trim: true,
+            maxlength: 100,
+          },
+          is_primary: {
+            type: Boolean,
+            default: false,
+          },
+        },
+      ],
+      // === Visitas Domiciliarias ===========================================
+      home_visits: [
+        {
+          date: {
+            type: Date,
+            default: Date.now,
+          },
+          observations: {
+            type: String,
+            trim: true,
+            maxlength: 2000,
+          },
+          conducted_by: {
+            type: Schema.Types.ObjectId,
+            ref: "User",
+          },
+        },
+      ],
+      // === Legacy fields (mantener para backward compatibility) ============
+      // Contacto de emergencia (legacy — migrado a emergency_contacts)
+      emergency_contact_name: {
+        type: String,
+        trim: true,
+        maxlength: 200,
+        default: null,
+      },
+      emergency_contact_phone: {
+        type: String,
+        trim: true,
+        maxlength: 20,
+        default: null,
+      },
+      emergency_contact_relationship: {
+        type: String,
+        trim: true,
+        maxlength: 100,
+        default: null,
+      },
+      // Fecha de última evaluación
+      last_evaluation_date: {
+        type: Date,
+        default: null,
+      },
+      // Notas adicionales del trabajador social
+      notes: {
+        type: String,
+        trim: true,
+        maxlength: 2000,
+        default: null,
+      },
+      // Alertas visuales para otros roles (maestro, prefecto)
+      alerts: [
+        {
+          type: {
+            type: String,
+            enum: {
+              values: ["medica", "comportamental", "academica", "otra"],
+              message: "alert type must be: medica, comportamental, academica or otra.",
+            },
+          },
+          label: {
+            type: String,
+            trim: true,
+            maxlength: 100,
+          },
+          description: {
+            type: String,
+            trim: true,
+            maxlength: 500,
+          },
+        },
+      ],
+    },
   },
   {
     timestamps: true,

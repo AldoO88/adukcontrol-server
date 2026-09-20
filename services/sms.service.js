@@ -1,20 +1,20 @@
-// Servicio de SMS.
-// MOCK: por ahora solo loggea a consola. En producción, reemplazar con Twilio,
-// AWS SNS, MessageBird, etc.
+// DEPRECATED: Este servicio ya no se usa para OTPs.
+// Los OTPs ahora van por WhatsApp vía services/whatsapp.service.js
+// (Twilio WhatsApp Business API + Authentication template).
 //
-// Para integrar Twilio:
-//   const twilio = require("twilio")(process.env.TWILIO_SID, process.env.TWILIO_TOKEN);
-//   await twilio.messages.create({ to: phoneNumber, from: ..., body: message });
-//
-// Para integrar AWS SNS:
-//   const sns = new AWS.SNS();
-//   await sns.publish({ PhoneNumber: phoneNumber, Message: message }).promise();
+// Se mantiene el archivo con un warning para no romper callers legacy
+// que pudieran haber quedado en scripts de seed o en tests.
+// TODO(2026-Q2): eliminar completamente cuando se confirme que no hay
+// imports en ningún sitio.
 
 const sendSms = async (phoneNumber, message) => {
-  // Simulación: en desarrollo, el OTP aparece en la consola del servidor
-  // para que se pueda probar el flujo sin un proveedor real.
-  console.log(`[sms][mock] To: +52${phoneNumber} | Message: ${message}`);
-  return { dispatched: true, provider: "mock" };
+  console.warn(
+    "[DEPRECATED] services/sms.service.js sendSms() should not be called anymore. Use whatsappService.sendOtpViaWhatsApp() instead."
+  );
+  // Por seguridad, NO enviamos nada real — solo loggeamos. Si en algún
+  // script de seed hay un import residual, lo verá en consola.
+  console.log(`[sms][mock-noop] To: +52${phoneNumber} | Message: ${message}`);
+  return { dispatched: false, provider: "noop", deprecated: true };
 };
 
 module.exports = { sendSms };

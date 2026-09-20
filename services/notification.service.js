@@ -1,169 +1,251 @@
-// Servicio de Notificaciones Push (Firebase Cloud Messaging)
-// Encapsula el SDK de Firebase Admin para enviar notificaciones push
-// a los dispositivos de los tutores cuando se registra un evento de
-// asistencia, se publica un aviso, o se agenda un citatorio.
+// Servicio de Notificaciones Push — Expo Push API
+// ---------------------------------------------------------------------
+// Encapsula el envío de notificaciones push a dispositivos iOS y Android
+// usando el servicio de Expo (https://exp.host/--/api/v2/push/send).
 //
-// Es seguro llamar a las funciones de este módulo aunque Firebase no esté
-// configurado: las funciones simplemente devolverán null o un resultado vacío
-// y se imprimirá una advertencia en consola.
-const path = require("path"); // Utilidades para manejar rutas de archivos
-const fs = require("fs"); // Sistema de archivos
-const admin = require("firebase-admin"); // SDK de Firebase Admin
+// Ventajas vs. Firebase Cloud Messaging directo:
+//   - No requiere @react-native-firebase/* ni google-services.json.
+//   - Compatible con Expo Go en iOS (todavía).
+//   - Expo traduce los Expo Push Tokens a FCM (Android) / APNs (iOS)
+//     internamente — el backend no necesita saber cuál SDK usa el móvil.
+//
+// Modelo de datos:
+//   - Guardian.fcm_token / User.fcm_token siguen llamándose así en la DB
+//     pero ahora almacenan Expo Push Tokens ("ExponentPushToken[…]").
+//   - Cuando Expo responde "DeviceNotRegistered", marcamos el token como
+//     null en la DB (la app móvil deberá re-registrar en el próximo login).
+//
+// Es seguro llamar a las funciones de este módulo aunque no haya tokens
+// registrados: las funciones simplemente devolverán un resultado vacío y
+// se imprimirá una advertencia en consola.
+// =====================================================================
+
 const Guardian = require("../models/Guardian.model"); // Modelo de tutores
 const Student = require("../models/Student.model"); // Modelo de estudiantes
 const User = require("../models/User.model"); // Modelo de usuarios (para notificaciones a staff)
+const notificationsService = require("./notifications.service"); // Persistencia in-app (campanita)
 
-// Bandera: true después de inicializar Firebase correctamente
-let initialized = false;
+// URL del servicio de Expo Push. Puede sobreescribirse en .env para
+// tests o entornos on-prem. El default es el público de Expo.
+const EXPO_PUSH_URL =
+  process.env.EXPO_PUSH_API_URL || "https://exp.host/--/api/v2/push/send";
 
-// Inicializa el SDK de Firebase Admin usando la ruta al JSON de la cuenta de servicio
-// indicada por la variable de entorno FIREBASE_SERVICE_ACCOUNT_PATH.
-// Devuelve el admin inicializado o null si no se pudo inicializar.
-const initializeFirebase = () => {
-  if (initialized) {
-    return admin;
-  }
-
-  const serviceAccountPath = process.env.FIREBASE_SERVICE_ACCOUNT_PATH;
-
-  if (!serviceAccountPath) {
-    console.warn(
-      "[firebase] FIREBASE_SERVICE_ACCOUNT_PATH is not set. Push notifications will be disabled."
-    );
-    return null;
-  }
-
-  // Aceptar tanto rutas absolutas como relativas al cwd
-  const absolutePath = path.isAbsolute(serviceAccountPath)
-    ? serviceAccountPath
-    : path.resolve(process.cwd(), serviceAccountPath);
-
-  if (!fs.existsSync(absolutePath)) {
-    console.warn(
-      `[firebase] Service account file not found at ${absolutePath}. Push notifications will be disabled.`
-    );
-    return null;
-  }
-
-  try {
-    const serviceAccount = JSON.parse(fs.readFileSync(absolutePath, "utf8"));
-
-    if (!admin.apps.length) {
-      admin.initializeApp({
-        credential: admin.credential.cert(serviceAccount),
-      });
-    }
-
-    initialized = true;
-    console.log("[firebase] Firebase Admin SDK initialized successfully.");
-    return admin;
-  } catch (error) {
-    console.error(
-      `[firebase] Failed to initialize Firebase Admin SDK: ${error.message}`
-    );
-    return null;
-  }
+// Channels de Android (Expo los pasa como `channelId` en el payload).
+// El móvil debe crear canales con los mismos IDs en
+// notificationService.createAndroidChannel() para que el sistema
+// operativo respete los settings (sonido, vibración, importance, etc.).
+const CHANNELS = {
+  attendance: "eduk_attendance_channel",
+  citation: "eduk_citations_channel",
+  announcement: "eduk_announcements_channel",
 };
 
-// Helper: ¿está Firebase listo para enviar mensajes?
-const isFirebaseReady = () => initialized && admin.apps.length > 0;
-
-// Envía un mensaje multicast a una lista de tokens FCM.
-// Devuelve { successCount, failureCount, responses }.
+// =====================================================================
+// sendToTokens(tokens, payload)
+// =====================================================================
+// Envía un push a una lista de Expo Push Tokens.
+// `payload` debe tener: { title, body, channelId, data }.
+// Devuelve { successCount, failureCount, responses, tickets }.
+// =====================================================================
 const sendToTokens = async (tokens, payload) => {
   if (!Array.isArray(tokens) || tokens.length === 0) {
-    return { successCount: 0, failureCount: 0, responses: [] };
+    return { successCount: 0, failureCount: 0, responses: [], tickets: [] };
   }
 
-  if (!isFirebaseReady()) {
-    console.warn(
-      "[firebase] Skipping push notification dispatch: Firebase is not configured."
-    );
-    return { successCount: 0, failureCount: tokens.length, responses: [] };
-  }
-
-  const messaging = admin.messaging();
-  const multicastMessage = {
-    tokens, // Lista de tokens destino
-    notification: {
-      title: payload.title, // Título visible
-      body: payload.body, // Cuerpo visible
-    },
-    // FCM exige que los valores en "data" sean strings
+  // Expo Push acepta un array de hasta 100 mensajes por request.
+  // Construimos un mensaje por token.
+  const messages = tokens.map((token) => ({
+    to: token,
+    sound: "default",
+    title: payload.title,
+    body: payload.body,
+    // `channelId` se respeta en Android (Android 8+). El cliente debe
+    // haber creado el canal con este mismo ID.
+    channelId: payload.channelId || CHANNELS.attendance,
+    // data debe ser string-keyed string-valued (Expo lo requiere).
     data: payload.data
       ? Object.fromEntries(
-          Object.entries(payload.data).map(([key, value]) => [
-            key,
-            String(value),
-          ])
+          Object.entries(payload.data).map(([k, v]) => [k, String(v)])
         )
       : {},
-    android: {
-      priority: "high",
-      notification: {
-        sound: "default",
-        channelId: payload.channelId || "eduk_attendance_channel",
-      },
-    },
-    apns: {
-      headers: { "apns-priority": "10" },
-      payload: {
-        aps: { sound: "default", "content-available": 1 },
-      },
-    },
-  };
+    // Prioridad alta para delivery inmediato. En iOS esto activa el
+    // delivery silencioso + visible (content-available: 1).
+    priority: "high",
+  }));
 
   try {
-    const response = await messaging.sendEachForMulticast(multicastMessage);
-    return {
-      successCount: response.successCount,
-      failureCount: response.failureCount,
-      responses: response.responses,
-    };
+    const response = await fetch(EXPO_PUSH_URL, {
+      method: "POST",
+      headers: {
+        Accept: "application/json",
+        "Accept-encoding": "gzip, deflate",
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(messages),
+    });
+
+    if (!response.ok) {
+      const errorText = await response.text();
+      console.error(
+        `[expo-push] HTTP ${response.status} from Expo Push API: ${errorText}`
+      );
+      return {
+        successCount: 0,
+        failureCount: tokens.length,
+        responses: [],
+        tickets: [],
+        httpError: response.status,
+      };
+    }
+
+    const result = await response.json();
+    // Expo Push responde con { data: [{ status, id?, message?, details? }, ...] }
+    const tickets = Array.isArray(result?.data) ? result.data : [];
+
+    let successCount = 0;
+    let failureCount = 0;
+    tickets.forEach((ticket) => {
+      if (ticket.status === "ok") successCount++;
+      else failureCount++;
+    });
+
+    return { successCount, failureCount, responses: tickets, tickets };
   } catch (error) {
-    console.error(
-      `[firebase] Error sending push notifications: ${error.message}`
-    );
-    throw error;
+    console.error(`[expo-push] Error sending push: ${error.message}`);
+    return {
+      successCount: 0,
+      failureCount: tokens.length,
+      responses: [],
+      tickets: [],
+      networkError: error.message,
+    };
   }
 };
 
-// Notifica a los tutores de un estudiante sobre un evento de asistencia recién creado.
-// Devuelve { dispatched, failed, tokens, invalidated } o { dispatched: 0, reason: "..." }.
-const sendAttendanceNotification = async (student, attendanceLog) => {
-  // Buscar los tutores del estudiante en la colección Guardian
-  // (single source of truth tras la refactorización)
-  const guardians = await Guardian.find({
-    students: student._id,
-    school: student.school,
-  }).select("fcm_token phone name");
-
+// =====================================================================
+// dispatchToGuardians(guardians, payload, logTag)
+// =====================================================================
+// Helper compartido: arma el mapa token → guardian, despacha el push,
+// limpia tokens stale (DeviceNotRegistered) y persiste cada push
+// enviada en la colección Notification (para la campanita in-app).
+// Lo usan las funciones de notificación a tutores.
+// =====================================================================
+const dispatchToGuardians = async (guardians, payload, logTag) => {
   if (!guardians || guardians.length === 0) {
     return { dispatched: 0, reason: "no_guardians" };
   }
-
-  // Construir mapa token → guardian_id para poder invalidar tokens
-  // obsoletos cuando Firebase los rechace.
   const tokenToGuardian = new Map();
+  // Map user_id → guardian para persistir notificaciones in-app.
+  // Solo guardamos el primer guardian por user_id (un tutor puede
+  // ser guardian de varios alumnos y recibiría la misma push N veces,
+  // pero en la campanita solo aparece UNA entrada por user_id).
+  const userIdToGuardian = new Map();
   for (const g of guardians) {
     if (typeof g.fcm_token === "string" && g.fcm_token.trim().length > 0) {
       tokenToGuardian.set(g.fcm_token, g._id);
     }
+    // Solo guardamos para persistencia si el guardian tiene user_id
+    // (tutor activado). Guardians sin user_id son tutores pre-registrados
+    // que aún no activaron su cuenta — no pueden ver la campanita.
+    if (g.user_id) {
+      const uidStr = String(g.user_id);
+      if (!userIdToGuardian.has(uidStr)) {
+        userIdToGuardian.set(uidStr, g);
+      }
+    }
   }
-
   const tokens = [...tokenToGuardian.keys()];
   if (tokens.length === 0) {
     return { dispatched: 0, reason: "no_tokens" };
   }
 
-  // Identificador legible de la escuela para los logs
+  const result = await sendToTokens(tokens, payload);
+
+  // Persistir cada push enviada en la campanita in-app (solo para
+  // guardians ACTIVADOS con user_id). Best-effort: si la persistencia
+  // falla, el push ya se mandó — loggeamos pero no fallamos.
+  const persistedUserIds = new Set();
+  for (const [userIdStr, guardian] of userIdToGuardian.entries()) {
+    if (persistedUserIds.has(userIdStr)) continue;
+    persistedUserIds.add(userIdStr);
+    try {
+      await notificationsService.persistNotification({
+        recipient_user_id: guardian.user_id,
+        recipient_role: "tutor",
+        school: guardian.school,
+        kind: payload.data?.kind || "announcement",
+        title: payload.title,
+        body: payload.body,
+        data: payload.data || {},
+        channel_id: payload.channelId,
+      });
+    } catch (persistErr) {
+      console.warn(
+        `[${logTag}] Failed to persist notification for user ${userIdStr}: ${persistErr.message}`
+      );
+    }
+  }
+
+  // Invalidar tokens stale: Expo responde "DeviceNotRegistered" cuando
+  // el usuario desinstaló la app o el token expiró. Marcamos como null
+  // para que el siguiente login re-registre el token nuevo.
+  const invalidTokenGuardianIds = [];
+  if (result.tickets && Array.isArray(result.tickets)) {
+    result.tickets.forEach((ticket, idx) => {
+      if (ticket.status === "ok") return;
+      const errorCode = ticket.details?.error;
+      if (errorCode !== "DeviceNotRegistered") return;
+      const failedToken = tokens[idx];
+      const guardianId = tokenToGuardian.get(failedToken);
+      if (guardianId) invalidTokenGuardianIds.push(guardianId);
+    });
+  }
+
+  let invalidated = 0;
+  if (invalidTokenGuardianIds.length > 0) {
+    const upd = await Guardian.updateMany(
+      { _id: { $in: invalidTokenGuardianIds } },
+      { $set: { fcm_token: null } }
+    );
+    invalidated = upd.modifiedCount;
+    console.log(
+      `[${logTag}] Invalidated ${invalidated} stale expo push token(s) (will require mobile app to re-register)`
+    );
+  }
+
+  return {
+    dispatched: result.successCount,
+    failed: result.failureCount,
+    tokens: tokens.length,
+    invalidated,
+  };
+};
+
+// =====================================================================
+// Notificaciones para TUTORES (attendance, citation, announcement)
+// =====================================================================
+
+// Notifica a los tutores de un estudiante sobre un evento de asistencia
+// recién creado (RFID tap).
+const sendAttendanceNotification = async (student, attendanceLog) => {
+  const guardians = await Guardian.find({
+    students: student._id,
+    school: student.school,
+  })
+    .select("fcm_token phone name")
+    .lean();
+
+  if (!guardians || guardians.length === 0) {
+    return { dispatched: 0, reason: "no_guardians" };
+  }
+
   const schoolTag = student.school
-    ? (student.school.cct ? student.school.cct : String(student.school._id || student.school))
+    ? student.school.cct || String(student.school._id || student.school)
     : "no-school";
 
   const fullName = `${student.first_name} ${student.last_name}`.trim();
   const eventTypeLabel =
-    attendanceLog.event_type === "entry" ? "ENTRY" : "EXIT";
+    attendanceLog.event_type === "entry" ? "ENTRADA" : "SALIDA";
   const time = new Date(attendanceLog.event_time).toLocaleTimeString("en-US", {
     hour: "2-digit",
     minute: "2-digit",
@@ -171,9 +253,10 @@ const sendAttendanceNotification = async (student, attendanceLog) => {
 
   const payload = {
     title: `${eventTypeLabel}: ${fullName}`,
-    body: `${fullName} marked ${eventTypeLabel.toLowerCase()} at ${time}.`,
-    channelId: "eduk_attendance_channel",
+    body: `${fullName} registró ${eventTypeLabel.toLowerCase()} a las ${time}.`,
+    channelId: CHANNELS.attendance,
     data: {
+      kind: "attendance",
       event_type: attendanceLog.event_type,
       student_id: String(student._id),
       controlNumber: student.controlNumber,
@@ -183,111 +266,65 @@ const sendAttendanceNotification = async (student, attendanceLog) => {
   };
 
   console.log(
-    `[attendance][school=${schoolTag}] Dispatching ${eventTypeLabel} for ${fullName} to ${tokens.length} token(s)`
+    `[attendance][school=${schoolTag}] Dispatching ${eventTypeLabel} for ${fullName} to ${guardians.length} guardian(s)`
   );
-
-  const result = await sendToTokens(tokens, payload);
-
-  // Invalidar tokens rechazados por Firebase: si llegan con error de
-  // "no registrado" o "inválido", los marcamos como null en la DB para no
-  // seguir mandándoles push. La app móvil tendrá que re-registrar el token
-  // (o el usuario desinstaló la app).
-  const invalidTokenGuardianIds = [];
-  if (result.responses && Array.isArray(result.responses)) {
-    result.responses.forEach((resp, idx) => {
-      if (resp.success || !resp.error) return;
-      const code = resp.error.code || "";
-      const isStale =
-        code === "messaging/registration-token-not-registered" ||
-        code === "messaging/invalid-registration-token" ||
-        code === "messaging/invalid-argument";
-      if (!isStale) return;
-      const failedToken = tokens[idx];
-      const guardianId = tokenToGuardian.get(failedToken);
-      if (guardianId) invalidTokenGuardianIds.push(guardianId);
-    });
-  }
-
-  let invalidated = 0;
-  if (invalidTokenGuardianIds.length > 0) {
-    const upd = await Guardian.updateMany(
-      { _id: { $in: invalidTokenGuardianIds } },
-      { $set: { fcm_token: null } }
-    );
-    invalidated = upd.modifiedCount;
-    console.log(
-      `[attendance][school=${schoolTag}] Invalidated ${invalidated} stale fcm_token(s) (will require mobile app to re-register)`
-    );
-  }
-
-  return {
-    dispatched: result.successCount,
-    failed: result.failureCount,
-    tokens: tokens.length,
-    invalidated,
-  };
+  return dispatchToGuardians(guardians, payload, "attendance");
 };
 
-// Helper compartido: arma el tokenToGuardian map, despacha y limpia
-// tokens stale. Lo usan las 3 funciones de notificación (attendance,
-// citation, announcement) para no duplicar el patrón de invalidación.
-const dispatchToGuardians = async (guardians, payload, logTag) => {
+// Notifica a los tutores de un estudiante sobre una ausencia marcada
+// automáticamente por el cronjob o manualmente por el admin.
+const sendAbsenceNotification = async (student, attendanceLog) => {
+  const guardians = await Guardian.find({
+    students: student._id,
+    school: student.school,
+  })
+    .select("fcm_token phone name")
+    .lean();
+
   if (!guardians || guardians.length === 0) {
     return { dispatched: 0, reason: "no_guardians" };
   }
-  const tokenToGuardian = new Map();
-  for (const g of guardians) {
-    if (typeof g.fcm_token === "string" && g.fcm_token.trim().length > 0) {
-      tokenToGuardian.set(g.fcm_token, g._id);
-    }
-  }
-  const tokens = [...tokenToGuardian.keys()];
-  if (tokens.length === 0) {
-    return { dispatched: 0, reason: "no_tokens" };
-  }
 
-  const result = await sendToTokens(tokens, payload);
+  const fullName = `${student.first_name} ${student.last_name}`.trim();
+  const time = new Date(attendanceLog.event_time).toLocaleTimeString("en-US", {
+    hour: "2-digit",
+    minute: "2-digit",
+  });
 
-  // Invalidar tokens stale (registration-token-not-registered, etc.)
-  const invalidTokenGuardianIds = [];
-  if (result.responses && Array.isArray(result.responses)) {
-    result.responses.forEach((resp, idx) => {
-      if (resp.success || !resp.error) return;
-      const code = resp.error.code || "";
-      const isStale =
-        code === "messaging/registration-token-not-registered" ||
-        code === "messaging/invalid-registration-token" ||
-        code === "messaging/invalid-argument";
-      if (!isStale) return;
-      const failedToken = tokens[idx];
-      const guardianId = tokenToGuardian.get(failedToken);
-      if (guardianId) invalidTokenGuardianIds.push(guardianId);
-    });
-  }
+  const statusLabel =
+    attendanceLog.status === "absent" ? "AUSENCIA" : "RETARDO";
+  const bodySuffix =
+    attendanceLog.status === "absent"
+      ? `fue marcado ausente a las ${time}.`
+      : `llegó tarde a las ${time}.`;
 
-  let invalidated = 0;
-  if (invalidTokenGuardianIds.length > 0) {
-    const upd = await Guardian.updateMany(
-      { _id: { $in: invalidTokenGuardianIds } },
-      { $set: { fcm_token: null } }
-    );
-    invalidated = upd.modifiedCount;
-    console.log(
-      `[${logTag}] Invalidated ${invalidated} stale fcm_token(s)`
-    );
-  }
-
-  return {
-    dispatched: result.successCount,
-    failed: result.failureCount,
-    tokens: tokens.length,
-    invalidated,
+  const payload = {
+    title: `${statusLabel}: ${fullName}`,
+    body: `${fullName} ${bodySuffix}`,
+    channelId: CHANNELS.attendance,
+    data: {
+      kind: "absence",
+      event_type: attendanceLog.event_type,
+      status: attendanceLog.status,
+      student_id: String(student._id),
+      controlNumber: student.controlNumber,
+      event_time: String(attendanceLog.event_time),
+      log_id: String(attendanceLog._id),
+    },
   };
+
+  const schoolTag = student.school
+    ? student.school.cct || String(student.school._id || student.school)
+    : "no-school";
+
+  console.log(
+    `[attendance][school=${schoolTag}] Dispatching ${statusLabel} for ${fullName} to ${guardians.length} guardian(s)`
+  );
+  return dispatchToGuardians(guardians, payload, "attendance");
 };
 
-// Notifica a los tutores de un estudiante sobre un citatorio recién creado
-// (o cuyo status cambió). `citation` debe traer el `student` populado.
-// Devuelve { dispatched, failed, tokens, invalidated } o { dispatched: 0, reason: "..." }.
+// Notifica a los tutores de un estudiante sobre un citatorio recién creado.
+// `citation` debe traer el `student` populado.
 const sendCitationNotification = async (citation) => {
   const studentId = citation.student?._id || citation.student;
   const studentName = citation.student
@@ -297,7 +334,9 @@ const sendCitationNotification = async (citation) => {
   const guardians = await Guardian.find({
     students: studentId,
     school: citation.school,
-  }).select("fcm_token phone name").lean();
+  })
+    .select("fcm_token phone name")
+    .lean();
 
   if (!guardians || guardians.length === 0) {
     return { dispatched: 0, reason: "no_guardians" };
@@ -322,7 +361,7 @@ const sendCitationNotification = async (citation) => {
     body: `${typeLabel} - ${dateStr}. ${citation.reason}${
       citation.location ? ` · Lugar: ${citation.location}` : ""
     }`,
-    channelId: "eduk_citations_channel",
+    channelId: CHANNELS.citation,
     data: {
       kind: "citation",
       citation_id: String(citation._id),
@@ -339,12 +378,100 @@ const sendCitationNotification = async (citation) => {
   return dispatchToGuardians(guardians, payload, "citations");
 };
 
+// Notifica reagendación de citatorio.
+const sendCitationRescheduledNotification = async (citation) => {
+  const studentId = citation.student?._id || citation.student;
+  const studentName = citation.student
+    ? `${citation.student.first_name || ""} ${citation.student.last_name || ""}`.trim()
+    : "Alumno";
+
+  const guardians = await Guardian.find({
+    students: studentId,
+    school: citation.school,
+  })
+    .select("fcm_token phone name")
+    .lean();
+
+  if (!guardians || guardians.length === 0) {
+    return { dispatched: 0, reason: "no_guardians" };
+  }
+
+  const dateStr = new Date(citation.scheduledDate).toLocaleString("es-MX", {
+    weekday: "short",
+    day: "2-digit",
+    month: "short",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+
+  const payload = {
+    title: `Citatorio reagendado: ${studentName}`,
+    body: `Nueva fecha: ${dateStr}. Lugar: ${citation.location || "No especificado"}`,
+    channelId: CHANNELS.citation,
+    data: {
+      kind: "citation_rescheduled",
+      citation_id: String(citation._id),
+      student_id: String(studentId),
+      scheduledDate: String(citation.scheduledDate),
+      type: citation.type,
+      status: citation.status,
+    },
+  };
+
+  console.log(
+    `[citations] Dispatching reschedule notification for ${studentName} to ${guardians.length} guardian(s)`
+  );
+  return dispatchToGuardians(guardians, payload, "citations");
+};
+
+// Notifica cancelación de citatorio.
+const sendCitationCancelledNotification = async (citation) => {
+  const studentId = citation.student?._id || citation.student;
+  const studentName = citation.student
+    ? `${citation.student.first_name || ""} ${citation.student.last_name || ""}`.trim()
+    : "Alumno";
+
+  const guardians = await Guardian.find({
+    students: studentId,
+    school: citation.school,
+  })
+    .select("fcm_token phone name")
+    .lean();
+
+  if (!guardians || guardians.length === 0) {
+    return { dispatched: 0, reason: "no_guardians" };
+  }
+
+  const dateStr = new Date(citation.scheduledDate).toLocaleString("es-MX", {
+    weekday: "short",
+    day: "2-digit",
+    month: "short",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+
+  const payload = {
+    title: `Citatorio cancelado: ${studentName}`,
+    body: `La cita del ${dateStr} ha sido cancelada.`,
+    channelId: CHANNELS.citation,
+    data: {
+      kind: "citation_cancelled",
+      citation_id: String(citation._id),
+      student_id: String(studentId),
+      scheduledDate: String(citation.scheduledDate),
+      type: citation.type,
+      status: citation.status,
+    },
+  };
+
+  console.log(
+    `[citations] Dispatching cancel notification for ${studentName} to ${guardians.length} guardian(s)`
+  );
+  return dispatchToGuardians(guardians, payload, "citations");
+};
+
 // Notifica a los tutores afectados por un aviso recién creado.
-// Determina los destinatarios según el targetType del aviso:
-//   - "general" → todos los estudiantes activos de la escuela
-//   - "group"   → estudiantes cuyo current_group_id está en targetGroups
-//   - "student" → estudiantes en targetStudents
-// Devuelve { dispatched, failed, tokens, invalidated } o { dispatched: 0, reason: "..." }.
+// targetType: "general" | "group" | "student".
 const sendAnnouncementNotification = async (announcement) => {
   // 1) Resolver los studentIds destinatarios.
   let studentIds = [];
@@ -395,7 +522,7 @@ const sendAnnouncementNotification = async (announcement) => {
     return { dispatched: 0, reason: "no_guardians" };
   }
 
-  // 3) Truncar el mensaje para que entre en el push (Android limita a ~240).
+  // 3) Truncar el mensaje (Android limita a ~240 chars).
   const truncated =
     announcement.message && announcement.message.length > 180
       ? `${announcement.message.slice(0, 177)}...`
@@ -408,7 +535,7 @@ const sendAnnouncementNotification = async (announcement) => {
   const payload = {
     title,
     body: truncated,
-    channelId: "eduk_announcements_channel",
+    channelId: CHANNELS.announcement,
     data: {
       kind: "announcement",
       announcement_id: String(announcement._id),
@@ -423,180 +550,60 @@ const sendAnnouncementNotification = async (announcement) => {
   return dispatchToGuardians(guardians, payload, "announcements");
 };
 
-// Notifica a los tutores de un estudiante sobre una ausencia marcada
-// automáticamente por el cronjob o manualmente por el admin.
-// Devuelve { dispatched, failed, tokens, invalidated } o { dispatched: 0, reason: "..." }.
-const sendAbsenceNotification = async (student, attendanceLog) => {
-  const guardians = await Guardian.find({
-    students: student._id,
-    school: student.school,
-  }).select("fcm_token phone name");
-
-  if (!guardians || guardians.length === 0) {
-    return { dispatched: 0, reason: "no_guardians" };
-  }
-
-  const fullName = `${student.first_name} ${student.last_name}`.trim();
-  const time = new Date(attendanceLog.event_time).toLocaleTimeString("en-US", {
-    hour: "2-digit",
-    minute: "2-digit",
-  });
-
-  const statusLabel =
-    attendanceLog.status === "absent" ? "AUSENCIA" : "RETARDO";
-  const bodySuffix =
-    attendanceLog.status === "absent"
-      ? `fue marcado ausente a las ${time}.`
-      : `llegó tarde a las ${time}.`;
-
-  const payload = {
-    title: `${statusLabel}: ${fullName}`,
-    body: `${fullName} ${bodySuffix}`,
-    channelId: "eduk_attendance_channel",
-    data: {
-      kind: "absence",
-      event_type: attendanceLog.event_type,
-      status: attendanceLog.status,
-      student_id: String(student._id),
-      controlNumber: student.controlNumber,
-      event_time: String(attendanceLog.event_time),
-      log_id: String(attendanceLog._id),
-    },
-  };
-
-  const schoolTag = student.school
-    ? student.school.cct || String(student.school._id || student.school)
-    : "no-school";
-
-  console.log(
-    `[attendance][school=${schoolTag}] Dispatching ${statusLabel} for ${fullName} to ${guardians.length} guardian(s)`
-  );
-
-  return dispatchToGuardians(guardians, payload, "attendance");
-};
-
-// Notifica a los tutores de un estudiante sobre un citatorio reagendado.
-// `citation` debe traer el `student` populado.
-// Devuelve { dispatched, failed, tokens, invalidated } o { dispatched: 0, reason: "..." }.
-const sendCitationRescheduledNotification = async (citation) => {
-  const studentId = citation.student?._id || citation.student;
-  const studentName = citation.student
-    ? `${citation.student.first_name || ""} ${citation.student.last_name || ""}`.trim()
-    : "Alumno";
-
-  const guardians = await Guardian.find({
-    students: studentId,
-    school: citation.school,
-  }).select("fcm_token phone name").lean();
-
-  if (!guardians || guardians.length === 0) {
-    return { dispatched: 0, reason: "no_guardians" };
-  }
-
-  const dateStr = new Date(citation.scheduledDate).toLocaleString("es-MX", {
-    weekday: "short",
-    day: "2-digit",
-    month: "short",
-    hour: "2-digit",
-    minute: "2-digit",
-  });
-
-  const payload = {
-    title: `Citatorio reagendado: ${studentName}`,
-    body: `Nueva fecha: ${dateStr}. Lugar: ${citation.location || "No especificado"}`,
-    channelId: "eduk_citations_channel",
-    data: {
-      kind: "citation_rescheduled",
-      citation_id: String(citation._id),
-      student_id: String(studentId),
-      scheduledDate: String(citation.scheduledDate),
-      type: citation.type,
-      status: citation.status,
-    },
-  };
-
-  console.log(
-    `[citations] Dispatching reschedule notification for ${studentName} to ${guardians.length} guardian(s)`
-  );
-  return dispatchToGuardians(guardians, payload, "citations");
-};
-
-// Notifica a los tutores de un estudiante sobre un citatorio cancelado.
-// `citation` debe traer el `student` populado.
-// Devuelve { dispatched, failed, tokens, invalidated } o { dispatched: 0, reason: "..." }.
-const sendCitationCancelledNotification = async (citation) => {
-  const studentId = citation.student?._id || citation.student;
-  const studentName = citation.student
-    ? `${citation.student.first_name || ""} ${citation.student.last_name || ""}`.trim()
-    : "Alumno";
-
-  const guardians = await Guardian.find({
-    students: studentId,
-    school: citation.school,
-  }).select("fcm_token phone name").lean();
-
-  if (!guardians || guardians.length === 0) {
-    return { dispatched: 0, reason: "no_guardians" };
-  }
-
-  const dateStr = new Date(citation.scheduledDate).toLocaleString("es-MX", {
-    weekday: "short",
-    day: "2-digit",
-    month: "short",
-    hour: "2-digit",
-    minute: "2-digit",
-  });
-
-  const payload = {
-    title: `Citatorio cancelado: ${studentName}`,
-    body: `La cita del ${dateStr} ha sido cancelada.`,
-    channelId: "eduk_citations_channel",
-    data: {
-      kind: "citation_cancelled",
-      citation_id: String(citation._id),
-      student_id: String(studentId),
-      scheduledDate: String(citation.scheduledDate),
-      type: citation.type,
-      status: citation.status,
-    },
-  };
-
-  console.log(
-    `[citations] Dispatching cancel notification for ${studentName} to ${guardians.length} guardian(s)`
-  );
-  return dispatchToGuardians(guardians, payload, "citations");
-};
-
 // =====================================================================
-// Notificaciones al STAFF (teacher/admin) cuando un tutor actuó sobre un citatorio
+// Notificaciones al STAFF (cuando un tutor actúa sobre un citatorio)
 // =====================================================================
 
-// Helper interno: envía un push a un solo staff user por su fcm_token.
-// Devuelve { dispatched: 1|0, reason?: string }.
+// Envía un push a un solo staff user por su fcm_token (que ahora es
+// un Expo Push Token). También persiste en la campanita in-app.
 const sendToStaffUser = async (user, payload) => {
   if (!user || !user.fcm_token) {
     return { dispatched: 0, reason: "no_fcm_token" };
   }
 
+  const result = await sendToTokens([user.fcm_token], payload);
+
+  // Persistir en campanita in-app (best-effort).
   try {
-    await sendToTokens([user.fcm_token], payload);
-    return { dispatched: 1 };
-  } catch (err) {
-    console.error(
-      `[notifications] Error sending to staff ${user._id}: ${err.message}`
+    await notificationsService.persistNotification({
+      recipient_user_id: user._id,
+      recipient_role: user.role,
+      school: user.school,
+      kind: payload.data?.kind || "announcement",
+      title: payload.title,
+      body: payload.body,
+      data: payload.data || {},
+      channel_id: payload.channelId,
+    });
+  } catch (persistErr) {
+    console.warn(
+      `[notifications] Failed to persist notification for staff ${user._id}: ${persistErr.message}`
     );
-    return { dispatched: 0, reason: err.message };
   }
+
+  // Invalidar si el token está stale.
+  if (result.tickets && result.tickets[0]?.details?.error === "DeviceNotRegistered") {
+    await User.updateOne(
+      { _id: user._id },
+      { $set: { fcm_token: null } }
+    );
+    console.log(
+      `[notifications] Invalidated stale expo push token for staff ${user._id}`
+    );
+  }
+
+  return {
+    dispatched: result.successCount,
+    failed: result.failureCount,
+  };
 };
 
 // Notifica al staff creator que un tutor confirmó un citatorio.
-// `citation` debe traer el student populado. `guardianName` es el nombre del tutor.
 const sendCitationConfirmedNotification = async (citation, guardianName) => {
   const studentName = citation.student
     ? `${citation.student.first_name || ""} ${citation.student.last_name || ""}`.trim()
     : "Alumno";
 
-  // Buscar al creator (staff) para obtener su fcm_token
   const creator = await User.findById(citation.creator)
     .select("fcm_token name last_name")
     .lean();
@@ -616,7 +623,7 @@ const sendCitationConfirmedNotification = async (citation, guardianName) => {
   const payload = {
     title: `Citatorio confirmado: ${studentName}`,
     body: `${guardianName} confirmó asistencia para ${dateStr}.`,
-    channelId: "eduk_citations_channel",
+    channelId: CHANNELS.citation,
     data: {
       kind: "citation_confirmed",
       citation_id: String(citation._id),
@@ -633,13 +640,15 @@ const sendCitationConfirmedNotification = async (citation, guardianName) => {
 };
 
 // Notifica al staff creator que un tutor solicita reagendar un citatorio.
-// `citation` debe traer el student populado. `guardianName` es el nombre del tutor.
-const sendCitationRescheduleRequestNotification = async (citation, guardianName, reason) => {
+const sendCitationRescheduleRequestNotification = async (
+  citation,
+  guardianName,
+  reason
+) => {
   const studentName = citation.student
     ? `${citation.student.first_name || ""} ${citation.student.last_name || ""}`.trim()
     : "Alumno";
 
-  // Buscar al creator (staff) para obtener su fcm_token
   const creator = await User.findById(citation.creator)
     .select("fcm_token name last_name")
     .lean();
@@ -651,7 +660,7 @@ const sendCitationRescheduleRequestNotification = async (citation, guardianName,
   const payload = {
     title: `Solicitud de reagendación`,
     body: `${guardianName} solicita reagendar cita de ${studentName}. Razón: ${reason}`,
-    channelId: "eduk_citations_channel",
+    channelId: CHANNELS.citation,
     data: {
       kind: "citation_reschedule_request",
       citation_id: String(citation._id),
@@ -668,8 +677,12 @@ const sendCitationRescheduleRequestNotification = async (citation, guardianName,
 };
 
 module.exports = {
-  initializeFirebase,
-  isFirebaseReady,
+  // Note: initializeFirebase e isFirebaseReady se mantienen en module.exports
+  // como no-ops para no romper imports legacy. En realidad ya no se usan.
+  initializeFirebase: () => null,
+  isFirebaseReady: () => false,
+
+  // API principal
   sendToTokens,
   sendAttendanceNotification,
   sendAbsenceNotification,
@@ -679,4 +692,8 @@ module.exports = {
   sendCitationConfirmedNotification,
   sendCitationRescheduleRequestNotification,
   sendAnnouncementNotification,
+
+  // Constantes exportadas (por si los controllers o tests las necesitan)
+  CHANNELS,
+  EXPO_PUSH_URL,
 };

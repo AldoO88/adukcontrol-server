@@ -12,6 +12,10 @@ const {
   verifyController,
   registerStaffFcmToken,
   changePasswordController,
+  requestPasswordReset,
+  verifyPasswordResetOtp,
+  resetPassword,
+  updateMyNotificationPreferences,
 } = require("../controllers/auth.controller");
 const { isAuthenticated } = require("../middleware/jwt.middleware");
 
@@ -39,7 +43,7 @@ router.post("/login", loginController);
 // POST /auth/logout — limpia la cookie HttpOnly
 router.post("/logout", logoutController);
 
-// POST /auth/request-activation — tutor pide OTP por SMS (rate-limited)
+// POST /auth/request-activation — tutor pide OTP por WhatsApp (rate-limited)
 router.post("/request-activation", otpRequestLimiter, requestActivationController);
 
 // POST /auth/verify-otp — valida OTP sin activar la cuenta
@@ -56,5 +60,21 @@ router.post("/fcm-token", isAuthenticated, registerStaffFcmToken);
 
 // PUT /auth/change-password — cambiar contraseña (cualquier usuario autenticado)
 router.put("/change-password", isAuthenticated, changePasswordController);
+
+// POST /auth/forgot-password/request — solicitar OTP para recuperar contraseña por WhatsApp (rate-limited)
+router.post(
+  "/forgot-password/request",
+  otpRequestLimiter,
+  requestPasswordReset
+);
+
+// POST /auth/forgot-password/verify — validar OTP de recuperación
+router.post("/forgot-password/verify", verifyPasswordResetOtp);
+
+// POST /auth/forgot-password/reset — asignar nueva contraseña usando OTP
+router.post("/forgot-password/reset", resetPassword);
+
+// PUT /auth/me/notification-preferences — activar/desactivar WhatsApp para el usuario actual
+router.put("/me/notification-preferences", isAuthenticated, updateMyNotificationPreferences);
 
 module.exports = router;

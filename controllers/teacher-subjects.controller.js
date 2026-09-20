@@ -386,20 +386,80 @@ const getGroupStudents = async (req, res, next) => {
       return res.status(403).json({ message: "You are not assigned to this group." });
     }
 
-    // 3. Obtener los alumnos inscritos en el grupo
-    const enrollments = await Enrollment.find({
-      school: schoolId,
-      group_id: groupId,
-      school_year_id: schoolYearId,
-      cycle_status: "enrolled",
-    })
-      .populate("student_id", "first_name last_name controlNumber photoUrl rfid_card biometricId")
-      .lean();
+    // 3. Obtener los alumnos del grupo
+    // Para grupos regulares: busca via Enrollment.
+    // Para grupos taller: busca via Student.workshop_group_id.
+    let students = [];
+    const isTaller = group.type === "taller";
 
-    const students = enrollments
-      .map((e) => e.student_id)
-      .filter(Boolean)
-      .sort((a, b) => (a.last_name || "").localeCompare(b.last_name || "") || (a.first_name || "").localeCompare(b.first_name || ""));
+    if (isTaller) {
+      // Grupo taller: alumnos asignados via Student.workshop_group_id
+      const tallerStudents = await Student.find({
+        school: schoolId,
+        status: "active",
+        workshop_group_id: groupId,
+      })
+        .select("first_name last_name controlNumber photoUrl rfid_card biometricId workshop_group_id")
+        .lean();
+
+      // Buscar enrollment activa de cada alumno para obtener su grupo de origen
+      const tallerStudentIds = tallerStudents.map((s) => s._id);
+      const tallerEnrollments = await Enrollment.find({
+        school: schoolId,
+        student_id: { $in: tallerStudentIds },
+        school_year_id: schoolYearId,
+        cycle_status: "enrolled",
+      })
+        .populate("group_id", "grade section")
+        .lean();
+
+      // Mapa: studentId → label del grupo de origen (ej: "1°A")
+      const originGroupMap = {};
+      for (const e of tallerEnrollments) {
+        if (e.group_id) {
+          originGroupMap[String(e.student_id)] = `${e.group_id.grade}°${e.group_id.section}`;
+        }
+      }
+
+      students = tallerStudents.map((s) => ({
+        _id: s._id,
+        first_name: s.first_name,
+        last_name: s.last_name,
+        fullName: `${s.first_name} ${s.last_name || ""}`.trim(),
+        controlNumber: s.controlNumber,
+        photoUrl: s.photoUrl || null,
+        rfid_card: s.rfid_card || null,
+        biometricId: s.biometricId || null,
+        originGroup: originGroupMap[String(s._id)] || null,
+      }));
+    } else {
+      // Grupo regular: alumnos via Enrollment
+      const enrollments = await Enrollment.find({
+        school: schoolId,
+        group_id: groupId,
+        school_year_id: schoolYearId,
+        cycle_status: "enrolled",
+      })
+        .populate("student_id", "first_name last_name controlNumber photoUrl rfid_card biometricId")
+        .lean();
+
+      students = enrollments
+        .map((e) => e.student_id)
+        .filter(Boolean)
+        .map((s) => ({
+          _id: s._id,
+          first_name: s.first_name,
+          last_name: s.last_name,
+          fullName: `${s.first_name} ${s.last_name || ""}`.trim(),
+          controlNumber: s.controlNumber,
+          photoUrl: s.photoUrl || null,
+          rfid_card: s.rfid_card || null,
+          biometricId: s.biometricId || null,
+          originGroup: null,
+        }));
+    }
+
+    students.sort((a, b) => (a.last_name || "").localeCompare(b.last_name || "") || (a.first_name || "").localeCompare(b.first_name || ""));
 
     // 4. Verificar si cada alumno pasó por el biométrico hoy (entry event)
     const AttendanceLog = require("../models/AttendanceLog.model");
@@ -492,6 +552,8 @@ const getGroupStudents = async (req, res, next) => {
           photoUrl: s.photoUrl || null,
           rfid_card: s.rfid_card || null,
           biometricId: s.biometricId || null,
+          // Grupo de origen (solo para talleres, null en regulares)
+          originGroup: s.originGroup || null,
           // Estado del biométrico (si pasó por el lector)
           checked_in: !!entryTime,
           entry_time: entryTime || null,

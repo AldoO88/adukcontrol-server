@@ -1,6 +1,6 @@
 # AGENTS.md — eduk-control-backend
 
-Express + MongoDB backend for **EdukControl**, a multi-tenant SaaS for school attendance with biometric (RFID / facial) device triggers and Firebase push notifications to guardians.
+Express + MongoDB backend for **EdukControl**, a multi-tenant SaaS for school attendance with biometric (RFID / facial) device triggers and Expo Push notifications to guardians and staff.
 
 ## Commands
 
@@ -24,10 +24,10 @@ Express + MongoDB backend for **EdukControl**, a multi-tenant SaaS for school at
 ## Entry points & layout
 
 - `server.js` — process entrypoint. Starts the HTTP listener, handles `SIGTERM`/`SIGINT`/`uncaughtException` shutdown. Delegates the app build to `app.js`.
-- `app.js` — builds the Express app: loads env, connects Mongo (`db/index.js`), initializes Firebase (`services/notification.service.js`), mounts global middleware (`config/index.js`), mounts routers, attaches error handler (`error-handling/index.js`).
+- `app.js` — builds the Express app: loads env, connects Mongo (`db/index.js`), mounts global middleware (`config/index.js`), mounts routers, attaches error handler (`error-handling/index.js`).
 - `routes/` ↔ `controllers/` are 1:1 (`auth`, `schools`, `students`, `groups`, `enrollments`, `attendance`, `adms`).
 - `middleware/` — `jwt.middleware.js` (verifies `Authorization: Bearer`), `authorize.middleware.js` (`authorize(...roles)`), `device.middleware.js` (`verifyDeviceApiKey` compares the device API key with `crypto.timingSafeEqual`; `verifyAdmsDevice` allowlists ZKTeco terminals by serial number and resolves their tenant), `tenant-context.middleware.js` (`attachSchoolContext`, `attachActiveSchoolYear`, `requireGuardianOf` — para los endpoints del Guardian Dashboard que necesitan school/schoolYear/relación tutor-student inyectados en `req`).
-- `services/notification.service.js` — Firebase Admin SDK wrapper; safe to call when Firebase is unconfigured (logs warning, returns null).
+- `services/notification.service.js` — Expo Push API wrapper (POST `https://exp.host/--/api/v2/push/send`); safe to call when no tokens are registered (no-op). Handles stale token invalidation on `DeviceNotRegistered`.
 - `services/attendance.service.js` — `registerAttendanceEvent` centraliza lo que comparten `POST /api/attendance/device-trigger` y el push ADMS de `/iclock/cdata`: supresión de duplicados (±60 s por alumno+dispositivo), alternancia entry/exit, creación del `AttendanceLog`, invalidación del cache de los tutores y disparo de la notificación push en `process.nextTick`.
 - `models/` — `User`, `School`, `SchoolYear`, `Student`, `AttendanceLog`, `Enrollment`, `Group`, `Grade`, `Subject`, `TeacherSubject`, `Guardian`, `AssetVersion`, `ConductLog`, `ConductConfig`, `Announcement`, `Citation`, `GradingPeriod`, `SchoolShift`, `ClassSchedule`, `SchoolCalendar`.
 - `db/index.js` — Mongoose connection (exits the process on failure).
@@ -208,7 +208,7 @@ Protocol rules that are easy to break:
 
 `PENDING_UPLOADS_BACKEND` (opcional) — `disk` (default) o `s3`. Si es `s3`, los buffers de uploads fallidos se persisten en S3 en vez de disco. Requiere también: `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_REGION`, `S3_PENDING_UPLOADS_BUCKET`.
 
-Firebase service account JSON (`config/firebase-service-account.json`) is **gitignored** and must be provisioned locally. The server starts and serves traffic even if the file is missing — notifications just no-op with a warning.
+`EXPO_PUSH_API_URL` (opcional) — URL del servicio de Expo Push. Default: `https://exp.host/--/api/v2/push/send`. Solo cambiar si usás un endpoint custom (tests, on-prem).
 
 ## Data model constraints
 
@@ -280,33 +280,110 @@ Cualquier cambio en `Grade` o `ConductLog` invalida el cache del dashboard (TTL 
 
 ## Conventions
 
-- CommonJS (`require`). Spanish comments in source files (doc-internal); English in user-facing strings (error messages, response bodies, FCM payloads — the frontend localizes).
+- CommonJS (`require`). Spanish comments in source files (doc-internal); English in user-facing strings (error messages, response bodies, Expo Push payloads — the frontend localizes).
 - Errors flow to `error-handling/index.js`; controllers just `next(error)`. Don't `try/catch`+`res.status` inside async handlers unless transforming the error.
 - `tenantFilter(req)` is the standard helper at the top of every controller that touches school-scoped data. Use it.
 - `morgan` is `dev`/`combined` only — disabled when `NODE_ENV === 'test'`.
 - Body limit is 1 MB for both JSON and urlencoded.
 - All timestamps use `timestamps: true`; do not add manual `createdAt`/`updatedAt`.
 
+## WhatsApp OTP (Twilio Business API)
+
+**Proveedor:** Twilio. **Canal único:** WhatsApp (sin fallback SMS).
+**Tipo de template:** Authentication (OTP).
+
+### Variables de entorno requeridas
+
+Ver `.env.example` para el detalle. Las claves son:
+
+- `TWILIO_ACCOUNT_SID`
+- `TWILIO_AUTH_TOKEN`
+- `TWILIO_WHATSAPP_FROM` (en sandbox: `+14155238886`)
+- `TWILIO_OTP_TEMPLATE_ID` (Content SID `HXxxxxx`, post-aprobación de Meta)
+- `TWILIO_STATUS_CALLBACK_URL` (URL pública del webhook)
+
+### Opt-in (obligatorio para cumplir Meta policy)
+
+Todo usuario que reciba OTPs vía WhatsApp debe tener `notification_prefs.whatsapp.opted_in === true`. El opt-in se captura en:
+
+- `POST /auth/signup` — body `whatsapp_opt_in: true` (source = `signup`)
+- `POST /api/guardians` — body `whatsapp_opt_in: true` (source = `admin_form`)
+- `PUT /auth/me/notification-preferences` — body `{ whatsapp_opted_in: true }` (source = `self_profile`)
+- `PUT /api/guardians/:guardianId` — body `whatsapp_opt_in: true` (source = `admin_form`)
+
+Los endpoints OTP (`/auth/request-activation`, `/auth/forgot-password/request`) retornan **`451 Unavailable For Legal Reasons`** con `{ consent_required: true }` si `opted_in === false`.
+
+### Webhook de status
+
+Twilio POSTea a `TWILIO_STATUS_CALLBACK_URL` con estados:
+`queued | sent | delivered | read | failed | undelivered`. Si Twilio
+reporta `failed`/`undelivered` con código `63007` (recipient not opted-in)
+o `63038` (session not found), el handler sincroniza `opted_in = false`
+en `User` y `Guardian` para evitar que se acumulen reintentos en vano.
+
+### Códigos de error Twilio manejados
+
+| Código | Significado | Mapeo HTTP |
+|--------|-------------|------------|
+| `21211` | Invalid 'To' phone number | `400` |
+| `63007` / `63038` | Recipient not opted in / session not found | `451` |
+| `63016` / `63033` | Template not approved / paused | `503` |
+
+### Archivos clave
+
+- `services/whatsapp.service.js` — wrapper de Twilio + custom errors
+- `controllers/webhooks.controller.js` — handler del status callback
+- `routes/auth-webhooks.routes.js` — montado en `/auth/webhooks`
+- `services/sms.service.js` — DEPRECATED, solo loggea a consola
+- `models/User.model.js` y `models/Guardian.model.js` — campo `notification_prefs.whatsapp`
+
+### Costos estimados
+
+- ~$0.04 USD por OTP vía Authentication template.
+- 1000 usuarios × 2 OTPs/año = ~$80 USD/año.
+
+### Cuándo reconsiderar
+
+- Si excedemos 500K mensajes/mes → migrar a 360dialog (más barato).
+- Si necesitamos SMS fallback → agregar Twilio SMS side-by-side.
+- Si Meta cambia política de Authentication templates → revisar documentación oficial.
+
 ## Known dead weight
 
 - `xss-clean` is listed in `package.json` dependencies but is **not** wired into `app.js`. Sanitization is currently provided by `express-mongo-sanitize` + `hpp` only. Removing `xss-clean` is safe; do not assume it is active.
 
-## Mobile app integration (FCM)
+## Mobile app integration (Expo Push)
 
-The mobile app (tutor side) must do two things to keep push notifications working:
+The mobile app uses **Expo Push API** for push notifications (`expo-notifications` SDK). On iOS this still works inside Expo Go; on Android, push remotes require a development build (`eas build --profile development`).
 
-1. **On install / first login**, request a token from Firebase Messaging and POST it to `/api/guardians/me/fcm-token` (body: `{ fcm_token, device_id? }`). The endpoint writes the token into every `Guardian` record linked to that user (one tutor can be guardian of several students, so the token is mirrored across all of them).
-2. **Subscribe to `onTokenRefresh`** and re-call the same endpoint whenever Firebase fires it. Firebase silently rotates tokens (restore from backup, reinstall, etc.); without this callback the push pipeline breaks without any error.
+### Token registration
 
-The backend auto-invalidates `fcm_token` when FCM returns `registration-token-not-registered`, `invalid-registration-token`, or `invalid-argument` during a send. After invalidation, the next event for that student will be a no-op for that device until the app re-registers.
+The mobile must register the Expo push token after login:
+
+1. **Tutor (rol `tutor`):** POST a `/api/guardians/me/fcm-token` con body `{ fcm_token: "ExponentPushToken[…]", device_id? }`. El backend escribe el token en **todos los Guardian records** vinculados al user_id (un tutor puede ser guardián de varios hijos).
+2. **Staff (cualquier otro rol):** POST a `/auth/fcm-token` con body `{ fcm_token: "ExponentPushToken[…]" }`. El backend escribe el token en `User.fcm_token`.
+
+> ⚠️ El campo en la DB sigue llamándose `fcm_token` por compatibilidad histórica, pero el valor es ahora un **Expo Push Token** (`ExponentPushToken[…]`), no un token FCM raw.
+
+### Token rotation
+
+Expo puede rotar el push token en cualquier momento (restore from backup, reinstalación, etc.). La app DEBE suscribirse a `Notifications.addPushTokenListener` y re-llamar al endpoint de registro cada vez que reciba un token nuevo.
+
+### Tap → deep linking
+
+El backend incluye `data.kind` en cada push (`attendance`, `absence`, `citation`, `citation_rescheduled`, `citation_cancelled`, `citation_confirmed`, `citation_reschedule_request`, `announcement`). El cliente debe usar `Notifications.addNotificationResponseReceivedListener` para parsear `data.kind` + `data.citation_id` / `data.student_id` / etc. y navegar a la pantalla correspondiente. Ver `src/utils/notificationData.js` en el mobile.
+
+### Auto-invalidation
+
+El backend marca `fcm_token = null` cuando Expo responde con `DeviceNotRegistered` (token expirado o app desinstalada). El siguiente login de la app re-registra el token.
 
 ## Things you should NOT do
 
 - Do not add a `lint` script that just `echo`s — wire a real linter (e.g. ESLint flat config) or leave it alone and update this file.
 - Do not add `xss-clean` middleware back without testing — it has known compatibility issues with modern Express 4.
-- Do not move the `process.nextTick` notification dispatch inline; the device must get a fast 201 even if FCM is slow.
+- Do not move the `process.nextTick` notification dispatch inline; the device must get a fast 201 even if Expo Push is slow.
 - Do not change `app.set('trust proxy', 1)` without also revising the rate limiter; removing it breaks the per-IP accounting behind a proxy.
-- Do not commit `config/firebase-service-account.json` or any populated `.env` file (both are gitignored — keep it that way).
+- Do not commit `config/firebase-service-account.json` (ya no se usa pero sigue gitignored — keep it that way) or any populated `.env` file (both are gitignored).
 - Do not remove the `school` field from any model. Do not weaken the `required: function()` on `User.school`.
 - Do not reintroduce a raw `school_year: String` field on `Group`, `Enrollment`, `Grade`, or `TeacherSubject` — always reference `SchoolYear` via `school_year_id`.
 - Do not write a query without `tenantFilter(req)` in any controller that handles school-scoped data. This is a security requirement, not a performance one.

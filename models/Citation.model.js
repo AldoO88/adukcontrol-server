@@ -119,7 +119,8 @@ const citationSchema = new Schema(
     // pending    → creado, aún no confirmado por el tutor
     // confirmed  → el tutor confirmó que asistirá
     // completed  → la reunión ocurrió (el staff la marca al terminar)
-    // no_show    → el tutor no se presentó (el staff la marca después)
+    // no_show    → el tutor no se presentó (automático por cron o manual)
+    // expired    → (reservado, no usado actualmente)
     // cancelled  → el citatorio fue cancelado por el teacher o admin
     status: {
       type: String,

@@ -194,7 +194,9 @@ const getStudentById = async (req, res, next) => {
     const student = await Student.findOne({
       _id: studentId,
       ...tenantFilter(req),
-    }).populate("current_group_id", "grade section school_year_id head_teacher_id");
+    })
+      .populate("current_group_id", "grade section school_year_id head_teacher_id")
+      .populate("guardians", "name relationship phone");
 
     if (!student) {
       return res.status(404).json({ message: `No student with id: ${studentId}` });
@@ -951,4 +953,141 @@ module.exports = {
   getStudentEnrollments,
   getStudentAcademicHistory,
   promoteStudentsBulk,
+};
+
+// =====================================================================
+// GET /api/students/:studentId/health
+// Devuelve la ficha de salud e inclusión de un estudiante.
+// =====================================================================
+const getStudentHealth = async (req, res, next) => {
+  try {
+    const { studentId } = req.params;
+    const schoolId = req.payload.schoolId;
+
+    if (!mongoose.Types.ObjectId.isValid(studentId)) {
+      return res.status(400).json({ message: "ID de alumno inválido." });
+    }
+
+    const student = await Student.findOne({
+      _id: studentId,
+      school: schoolId,
+    })
+      .select("first_name last_name health_inclusion medical_notes")
+      .lean();
+
+    if (!student) {
+      return res.status(404).json({ message: "Alumno no encontrado." });
+    }
+
+    res.status(200).json({
+      success: true,
+      data: {
+        studentId: student._id,
+        firstName: student.first_name,
+        lastName: student.last_name,
+        healthInclusion: student.health_inclusion || null,
+        medicalNotes: student.medical_notes || null,
+      },
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+// =====================================================================
+// PATCH /api/students/:studentId/health
+// Actualiza la ficha de salud e inclusión de un estudiante.
+// =====================================================================
+const updateStudentHealth = async (req, res, next) => {
+  try {
+    const { studentId } = req.params;
+    const schoolId = req.payload.schoolId;
+    const updates = req.body;
+
+    if (!mongoose.Types.ObjectId.isValid(studentId)) {
+      return res.status(400).json({ message: "ID de alumno inválido." });
+    }
+
+    const student = await Student.findOne({
+      _id: studentId,
+      school: schoolId,
+    });
+
+    if (!student) {
+      return res.status(404).json({ message: "Alumno no encontrado." });
+    }
+
+    // Campos permitidos para actualización
+    const allowedFields = [
+      "learning_style", "style_hint", "diagnosis",
+      "disability_type", "disability_severity",
+      "medical_conditions", "medications", "allergies",
+      "health_insurance",
+      "vaccination_authorization", "protection_civil_authorization",
+      "family_socioeconomic",
+      "emergency_contacts",
+      "home_visits",
+      "emergency_contact_name", "emergency_contact_phone",
+      "emergency_contact_relationship",
+      "last_evaluation_date",
+      "notes", "alerts", "medical_notes",
+    ];
+
+    // Inicializar health_inclusion si no existe
+    if (!student.health_inclusion) {
+      student.health_inclusion = {};
+    }
+
+    for (const field of allowedFields) {
+      if (updates[field] !== undefined) {
+        if (field === "medical_notes") {
+          student.medical_notes = updates[field];
+        } else if (field === "alerts") {
+          student.health_inclusion.alerts = updates[field];
+        } else if (field === "family_socioeconomic") {
+          // Merge profundo para family_socioeconomic
+          if (!student.health_inclusion.family_socioeconomic) {
+            student.health_inclusion.family_socioeconomic = {};
+          }
+          Object.assign(student.health_inclusion.family_socioeconomic, updates[field]);
+        } else if (field === "emergency_contacts" || field === "home_visits") {
+          // Arrays: reemplazar completo
+          student.health_inclusion[field] = updates[field];
+        } else {
+          student.health_inclusion[field] = updates[field];
+        }
+      }
+    }
+
+    await student.save();
+
+    res.status(200).json({
+      success: true,
+      message: "Ficha de salud actualizada correctamente.",
+      data: {
+        studentId: student._id,
+        healthInclusion: student.health_inclusion,
+        medicalNotes: student.medical_notes,
+      },
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+module.exports = {
+  createStudent,
+  getAllStudents,
+  getStudentById,
+  updateStudent,
+  deleteStudent,
+  uploadStudentPhoto,
+  getStudentPhotoVersions,
+  rollbackStudentPhoto,
+  promoteStudent,
+  getStudentEnrollments,
+  getStudentAcademicHistory,
+  promoteStudentsBulk,
+  getStudentHealth,
+  updateStudentHealth,
 };

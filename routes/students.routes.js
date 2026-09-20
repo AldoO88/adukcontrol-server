@@ -15,6 +15,8 @@ const {
   getStudentEnrollments,
   getStudentAcademicHistory,
   promoteStudentsBulk,
+  getStudentHealth,
+  updateStudentHealth,
 } = require("../controllers/students.controller");
 const { isAuthenticated } = require("../middleware/jwt.middleware");
 const { authorize } = require("../middleware/authorize.middleware");
@@ -70,6 +72,20 @@ router.post(
 );
 router.get("/:studentId/photo/versions", getStudentPhotoVersions);
 router.post("/:studentId/photo/rollback", rollbackStudentPhoto);
+
+// GET /api/students/:studentId/health — ficha de salud e inclusión
+router.get(
+  "/:studentId/health",
+  authorize("admin", "principal", "registrar", "teacher", "prefect", "social_worker"),
+  getStudentHealth
+);
+
+// PATCH /api/students/:studentId/health — actualizar ficha de salud e inclusión
+router.patch(
+  "/:studentId/health",
+  authorize("admin", "principal", "social_worker"),
+  updateStudentHealth
+);
 
 // POST /api/students/:studentId/promote — promover al siguiente ciclo escolar
 router.post(

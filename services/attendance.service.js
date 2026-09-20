@@ -148,8 +148,9 @@ const toMinutes = (hhmm) => {
 
 // Calcula el status de una entrada comparando la hora del evento con la
 // hora de inicio del turno del grupo del alumno.
-//   on_time → eventMinutes ≤ shiftMinutes
-//   late    → eventMinutes >  shiftMinutes
+// Esta función solo se ejecuta para eventos DENTRO del grace period
+// (antes del cutoff), por lo que siempre retorna "on_time".
+//   on_time → el alumno pasó el lector antes del cutoff
 //   null    → no se pudo resolver (sin grupo, sin turno, etc.)
 const computeEntryStatus = async (student, eventTime) => {
   try {
@@ -169,19 +170,8 @@ const computeEntryStatus = async (student, eventTime) => {
       .lean();
     if (!shift) return null;
 
-    const shiftMinutes = toMinutes(shift.startTime);
-    if (shiftMinutes === null) return null;
-
-    // Convertir event_time (UTC) a hora local usando ADMS_TZ_OFFSET_MINUTES.
-    // Si no está configurado, se usa 0 (asume server y escuela en misma zona).
-    const offset = parseInt(
-      process.env.ADMS_TZ_OFFSET_MINUTES || "0",
-      10
-    );
-    const localDate = new Date(eventTime.getTime() + offset * 60000);
-    const eventMinutes = localDate.getUTCHours() * 60 + localDate.getUTCMinutes();
-
-    return eventMinutes <= shiftMinutes ? "on_time" : "late";
+    // Siempre on_time: esta función solo se llama dentro del grace period
+    return "on_time";
   } catch (err) {
     console.warn(
       `[attendance] computeEntryStatus failed for student ${student._id}: ${err.message}`
@@ -285,8 +275,9 @@ const toLocalDate = (utcDate) => {
 };
 
 // Cuando un alumno llega después del corte de gracia y pasa el lector:
-// 1. Si ya existe un absent log de hoy → actualiza a "late" con la hora real del tap
-// 2. Si no existe → crea entry normal con status "late"
+// 1. Si ya existe un absent log de hoy → actualiza a "on_time" con la hora real del tap
+// 2. Si no existe → crea entry normal con status "on_time"
+// El rational: si el alumno pasó por el biometrico, YA ESTÁ presente sin importar la hora.
 // Retorna { log, wasAbsenceOverride: boolean, duplicate: boolean }.
 const resolveLateArrival = async ({
   student,
@@ -307,12 +298,12 @@ const resolveLateArrival = async ({
   });
 
   if (existingAbsent) {
-    // Actualizar el absent log a late con la hora real del tap
+    // Actualizar el absent log a on_time con la hora real del tap
     const updated = await AttendanceLog.findOneAndUpdate(
       { _id: existingAbsent._id },
       {
         $set: {
-          status: "late",
+          status: "on_time",
           event_time: eventTime,
           device,
           verificationMode,
@@ -328,7 +319,7 @@ const resolveLateArrival = async ({
     return { log: updated, wasAbsenceOverride: true, duplicate: false };
   }
 
-  // No hay absent existente → crear entry normal con status "late"
+  // No hay absent existente → crear entry normal con status "on_time"
   const log = await AttendanceLog.create({
     school: student.school,
     student_id: student._id,
@@ -337,7 +328,7 @@ const resolveLateArrival = async ({
     device,
     verificationMode,
     snapshotUrl,
-    status: "late",
+    status: "on_time",
   });
 
   await invalidateGuardianCaches(student);
@@ -352,7 +343,7 @@ const resolveLateArrival = async ({
 // Devuelve { log, eventType, duplicate, wasAbsenceOverride }.
 // `duplicate: true` significa que se reutilizó un log existente y NO se volvió
 // a notificar. `wasAbsenceOverride: true` significa que se actualizó un
-// absent→late (el alumno llegó tarde después del corte de gracia).
+// absent→on_time (el alumno pasó el lector después del corte de gracia).
 const registerAttendanceEvent = async ({
   student,
   eventTime,
@@ -373,7 +364,7 @@ const registerAttendanceEvent = async ({
   const eventType = await determineNextType(student._id);
 
   // Para entry events: si el alumno llegó después del corte de gracia,
-  // resolver late arrival (puede actualizar un absent→late o crear late normal)
+  // resolver arrival (puede actualizar un absent→on_time o crear on_time normal)
   if (eventType === "entry") {
     const { after } = await isAfterGracePeriod(student, eventTime);
     if (after) {

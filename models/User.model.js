@@ -140,6 +140,22 @@ const userSchema = new Schema(
       type: String,
       default: null,
     },
+    // Preferencias de notificación por canal. Cada subdoc lleva su propio
+    // opt-in timestamp + source para auditoría (Meta exige evidencia de
+    // consentimiento antes de mandar WhatsApp Business-initiated).
+    notification_prefs: {
+      // Estado del opt-in para mensajes WhatsApp Business (OTP,
+      // recuperación de contraseña, futuros avisos opcionales).
+      whatsapp: {
+        opted_in: { type: Boolean, default: false },
+        opted_in_at: { type: Date, default: null },
+        source: {
+          type: String,
+          enum: ["admin_form", "self_profile", "imported_seed", "signup", "unknown"],
+          default: null,
+        },
+      },
+    },
   },
   {
     timestamps: true,

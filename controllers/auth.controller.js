@@ -13,7 +13,7 @@ const User = require("../models/User.model");
 const School = require("../models/School.model");
 const Student = require("../models/Student.model");
 const Guardian = require("../models/Guardian.model");
-const smsService = require("../services/sms.service");
+const whatsappService = require("../services/whatsapp.service");
 const { generateOtp } = require("../utils/otp");
 
 // Cookie options para HttpOnly. Se setea en login/signup/activate.
@@ -81,6 +81,7 @@ const signupController = async (req, res, next) => {
       guardian_profile,
       student_ids,
       sex,
+      whatsapp_opt_in,
     } = req.body;
 
     // === Validaciones universales ===
@@ -179,6 +180,19 @@ const signupController = async (req, res, next) => {
     }
 
     // === Crear User (universal) ===
+    // Si el body incluye whatsapp_opt_in=true (o truthy) grabamos el
+    // consentimiento con source='signup' para auditoría. Cualquier
+    // otro valor (undefined, false, null) deja opted_in=false — el
+    // usuario lo activa después vía PUT /auth/me/notification-preferences.
+    const notificationPrefs = {};
+    if (whatsapp_opt_in === true || whatsapp_opt_in === "true") {
+      notificationPrefs.whatsapp = {
+        opted_in: true,
+        opted_in_at: new Date(),
+        source: "signup",
+      };
+    }
+
     const createdUser = await User.create({
       name: name.trim(),
       last_name: last_name ? last_name.trim() : null,
@@ -188,11 +202,20 @@ const signupController = async (req, res, next) => {
       school: school || null,
       phoneNumber: phoneNumber.trim(),
       sex: sex || null,
+      ...(Object.keys(notificationPrefs).length > 0 ? { notification_prefs: notificationPrefs } : {}),
     });
 
     // === Efecto secundario: crear Guardian si es tutor ===
     let createdGuardian = null;
     if (role === "tutor") {
+      const guardianNotificationPrefs = {};
+      if (whatsapp_opt_in === true || whatsapp_opt_in === "true") {
+        guardianNotificationPrefs.whatsapp = {
+          opted_in: true,
+          opted_in_at: new Date(),
+          source: "signup",
+        };
+      }
       createdGuardian = await Guardian.create({
         school,
         user_id: createdUser._id,
@@ -201,6 +224,9 @@ const signupController = async (req, res, next) => {
         phone: phoneNumber.trim(),
         students: validStudentIds,
         sex: sex || null,
+        ...(Object.keys(guardianNotificationPrefs).length > 0
+          ? { notification_prefs: guardianNotificationPrefs }
+          : {}),
       });
 
       // Sincronizar el lado Student.guardians
@@ -334,7 +360,7 @@ const logoutController = (req, res) => {
 };
 
 // POST /auth/request-activation
-// El tutor (pre-registrado por la escuela) solicita un OTP por SMS.
+// El tutor (pre-registrado por la escuela) solicita un OTP por WhatsApp.
 const requestActivationController = async (req, res, next) => {
   try {
     const { phoneNumber: phoneNumberRaw, phone } = req.body || {};
@@ -366,6 +392,17 @@ const requestActivationController = async (req, res, next) => {
         .json({ message: "Account is already active. Please log in." });
     }
 
+    // Opt-in check: el tutor debe tener consentimiento explícito para
+    // recibir WhatsApp. La escuela lo captura al pre-registrarlo, o el
+    // tutor lo activa después vía PUT /auth/me/notification-preferences.
+    if (!user.notification_prefs?.whatsapp?.opted_in) {
+      return res.status(451).json({
+        message:
+          "We need your consent to send you WhatsApp messages. Please ask your school to enable WhatsApp notifications for your account.",
+        consent_required: true,
+      });
+    }
+
     const otp = generateOtp();
     const expiresAt = new Date(Date.now() + 10 * 60 * 1000);
 
@@ -373,16 +410,37 @@ const requestActivationController = async (req, res, next) => {
     user.otpExpiresAt = expiresAt;
     await user.save();
 
-    await smsService.sendSms(
-      phoneNumber,
-      `Your EdukControl activation code is: ${otp}. It expires in 10 minutes.`
-    );
+    // Enviar OTP por WhatsApp (Twilio Authentication template).
+    await whatsappService.sendOtpViaWhatsApp(phoneNumber, otp, "activation");
 
     res.status(200).json({
       message: "Activation code sent to your phone.",
       expiresAt,
     });
   } catch (error) {
+    // Errores de Twilio: mapear a HTTP status apropiado.
+    if (error instanceof whatsappService.ConsentRequiredError) {
+      return res.status(451).json({
+        message:
+          "Recipient has not opted in to WhatsApp messages from EdukControl.",
+        consent_required: true,
+      });
+    }
+    if (error instanceof whatsappService.TemplateNotApprovedError) {
+      console.error(
+        "[requestActivationController] WhatsApp template not approved. Check TWILIO_OTP_TEMPLATE_ID in .env."
+      );
+      return res.status(503).json({
+        message:
+          "OTP service temporarily unavailable. Please contact your school.",
+      });
+    }
+    if (error instanceof whatsappService.InvalidPhoneError) {
+      return res.status(400).json({
+        message:
+          "The registered phone number is not valid for WhatsApp delivery.",
+      });
+    }
     next(error);
   }
 };
@@ -547,6 +605,76 @@ const verifyController = (req, res, next) => {
   }
 };
 
+// =====================================================================
+// PUT /auth/me/notification-preferences
+// Body: { whatsapp_opted_in: boolean }
+// Permite al usuario activar/desactivar WhatsApp para sí mismo (self-service).
+// Cualquier rol puede llamarlo: tutor, teacher, admin, etc.
+//
+// Si el usuario es tutor, sincronizamos también el campo en su registro
+// Guardian (la fuente de verdad histórica para tutores).
+// =====================================================================
+const updateMyNotificationPreferences = async (req, res, next) => {
+  try {
+    const { whatsapp_opted_in } = req.body || {};
+    if (typeof whatsapp_opted_in !== "boolean") {
+      return res.status(400).json({
+        message: "whatsapp_opted_in must be a boolean.",
+      });
+    }
+
+    const user = await User.findById(req.payload._id);
+    if (!user) {
+      return res.status(404).json({ message: "User not found." });
+    }
+
+    const source =
+      user.notification_prefs?.whatsapp?.opted_in === whatsapp_opted_in
+        ? user.notification_prefs?.whatsapp?.source || "self_profile"
+        : "self_profile";
+
+    user.notification_prefs = {
+      ...(user.notification_prefs?.toObject?.() || user.notification_prefs || {}),
+      whatsapp: {
+        opted_in: whatsapp_opted_in,
+        opted_in_at: whatsapp_opted_in ? new Date() : null,
+        source,
+      },
+    };
+    await user.save();
+
+    // Sincronizar con Guardian si el usuario es tutor (best-effort).
+    if (user.role === "tutor") {
+      try {
+        await Guardian.updateMany(
+          { user_id: user._id },
+          {
+            $set: {
+              "notification_prefs.whatsapp.opted_in": whatsapp_opted_in,
+              "notification_prefs.whatsapp.opted_in_at": whatsapp_opted_in
+                ? new Date()
+                : null,
+              "notification_prefs.whatsapp.source": source,
+            },
+          }
+        );
+      } catch (syncErr) {
+        console.warn(
+          "[updateMyNotificationPreferences] Failed to sync Guardian:",
+          syncErr.message
+        );
+      }
+    }
+
+    res.status(200).json({
+      message: "Notification preferences updated.",
+      notification_prefs: user.notification_prefs,
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
 // POST /auth/fcm-token
 // Register/update FCM token for staff users (teachers, admin, etc.)
 // Allows staff to receive push notifications (e.g., when guardian confirms
@@ -622,6 +750,223 @@ const changePasswordController = async (req, res, next) => {
   }
 };
 
+// =====================================================================
+// RECUPERACIÓN DE CONTRASEÑA (forgot-password)
+// ---------------------------------------------------------------------
+// Flujo de 3 endpoints análogo al de activación, pero para usuarios
+// que YA tienen cuenta activa y olvidaron su contraseña. Aplica a
+// cualquier rol (tutor, teacher, prefect, social_worker, principal,
+// admin, registrar, super_admin).
+//
+//   1. requestPasswordReset       → genera OTP, envía SMS.
+//   2. verifyPasswordResetOtp     → valida el OTP sin cambiar nada.
+//   3. resetPassword              → valida OTP + asigna nueva contraseña.
+// =====================================================================
+
+// POST /auth/forgot-password/request
+// Body: { phone: string }
+// Genera un OTP, lo hashea, lo guarda con expiración de 10 minutos,
+// y envía un WhatsApp con el código vía Twilio Authentication template.
+// NO devuelve el código al cliente (solo confirmación de envío).
+//
+// Aplica a cualquier rol (tutor, teacher, admin, etc.) que tenga
+// opted_in a WhatsApp. Si opted_in=false, retorna 451 para que el
+// front pida al usuario activar el canal desde su perfil.
+const requestPasswordReset = async (req, res, next) => {
+  try {
+    const { phoneNumber: phoneNumberRaw, phone } = req.body || {};
+    const phoneNumber = phoneNumberRaw || phone;
+
+    if (!phoneNumber || !/^\d{10}$/.test(phoneNumber)) {
+      return res.status(400).json({
+        message: "phoneNumber is required and must be 10 digits.",
+      });
+    }
+
+    const user = await User.findOne({ phoneNumber }).select(
+      "+otpCode +otpExpiresAt"
+    );
+
+    if (!user) {
+      return res.status(404).json({
+        message: "Phone number not registered.",
+      });
+    }
+
+    // Opt-in check (mismo gate que activación, pero para todos los roles).
+    if (!user.notification_prefs?.whatsapp?.opted_in) {
+      return res.status(451).json({
+        message:
+          "We need your consent to send you WhatsApp messages. Please enable WhatsApp notifications in your profile.",
+        consent_required: true,
+      });
+    }
+
+    const otp = generateOtp();
+    const expiresAt = new Date(Date.now() + 10 * 60 * 1000);
+
+    user.otpCode = otp;
+    user.otpExpiresAt = expiresAt;
+    await user.save();
+
+    // Enviar OTP por WhatsApp (Twilio Authentication template).
+    await whatsappService.sendOtpViaWhatsApp(
+      phoneNumber,
+      otp,
+      "password_reset"
+    );
+
+    res.status(200).json({
+      message: "Password reset code sent to your phone.",
+      expiresAt,
+    });
+  } catch (error) {
+    if (error instanceof whatsappService.ConsentRequiredError) {
+      return res.status(451).json({
+        message:
+          "Recipient has not opted in to WhatsApp messages from EdukControl.",
+        consent_required: true,
+      });
+    }
+    if (error instanceof whatsappService.TemplateNotApprovedError) {
+      console.error(
+        "[requestPasswordReset] WhatsApp template not approved. Check TWILIO_OTP_TEMPLATE_ID in .env."
+      );
+      return res.status(503).json({
+        message:
+          "OTP service temporarily unavailable. Please try again later.",
+      });
+    }
+    if (error instanceof whatsappService.InvalidPhoneError) {
+      return res.status(400).json({
+        message:
+          "The registered phone number is not valid for WhatsApp delivery.",
+      });
+    }
+    next(error);
+  }
+};
+
+// POST /auth/forgot-password/verify
+// Body: { phone: string, otpCode: string }
+// Valida que el OTP sea correcto y no haya expirado. NO modifica el
+// password ni limpia el OTP (lo hace resetPassword al final).
+const verifyPasswordResetOtp = async (req, res, next) => {
+  try {
+    const { phoneNumber: phoneNumberRaw, phone, otpCode } = req.body || {};
+    const phoneNumber = phoneNumberRaw || phone;
+
+    if (!phoneNumber || !otpCode) {
+      return res
+        .status(400)
+        .json({ message: "phoneNumber and otpCode are required." });
+    }
+    if (!/^\d{10}$/.test(phoneNumber)) {
+      return res
+        .status(400)
+        .json({ message: "phoneNumber must be 10 digits." });
+    }
+    if (!/^\d{6}$/.test(otpCode)) {
+      return res.status(400).json({ message: "otpCode must be 6 digits." });
+    }
+
+    const user = await User.findOne({ phoneNumber }).select(
+      "+otpCode +otpExpiresAt"
+    );
+
+    if (!user) {
+      return res.status(404).json({ message: "Phone number not registered." });
+    }
+    if (!user.otpCode || !user.otpExpiresAt) {
+      return res.status(400).json({
+        message: "No pending password reset. Please request a new code.",
+      });
+    }
+    if (user.otpExpiresAt < new Date()) {
+      return res.status(400).json({
+        message: "Reset code has expired. Please request a new one.",
+      });
+    }
+
+    const isMatch = await user.compareOtp(otpCode);
+    if (!isMatch) {
+      return res.status(400).json({ message: "Invalid reset code." });
+    }
+
+    res.status(200).json({ message: "Reset code verified." });
+  } catch (error) {
+    next(error);
+  }
+};
+
+// POST /auth/forgot-password/reset
+// Body: { phone: string, otpCode: string, newPassword: string }
+// Re-valida el OTP (defense-in-depth), valida longitud mínima de
+// password, asigna la nueva contraseña, limpia otpCode y otpExpiresAt.
+// NO devuelve JWT — el usuario hace login manual con su nueva contraseña.
+const resetPassword = async (req, res, next) => {
+  try {
+    const {
+      phoneNumber: phoneNumberRaw,
+      phone,
+      otpCode,
+      newPassword,
+    } = req.body || {};
+    const phoneNumber = phoneNumberRaw || phone;
+
+    if (!phoneNumber || !otpCode || !newPassword) {
+      return res.status(400).json({
+        message: "phoneNumber, otpCode, and newPassword are required.",
+      });
+    }
+    if (!/^\d{10}$/.test(phoneNumber)) {
+      return res
+        .status(400)
+        .json({ message: "phoneNumber must be 10 digits." });
+    }
+    if (!/^\d{6}$/.test(otpCode)) {
+      return res.status(400).json({ message: "otpCode must be 6 digits." });
+    }
+    if (newPassword.length < 8) {
+      return res.status(400).json({
+        message: "Password must be at least 8 characters long.",
+      });
+    }
+
+    const user = await User.findOne({ phoneNumber }).select(
+      "+otpCode +otpExpiresAt"
+    );
+
+    if (!user) {
+      return res.status(404).json({ message: "Phone number not registered." });
+    }
+    if (!user.otpCode || !user.otpExpiresAt) {
+      return res.status(400).json({
+        message: "No pending password reset. Please request a new code.",
+      });
+    }
+    if (user.otpExpiresAt < new Date()) {
+      return res.status(400).json({
+        message: "Reset code has expired. Please request a new one.",
+      });
+    }
+
+    const isMatch = await user.compareOtp(otpCode);
+    if (!isMatch) {
+      return res.status(400).json({ message: "Invalid reset code." });
+    }
+
+    user.password = newPassword;
+    user.otpCode = undefined;
+    user.otpExpiresAt = undefined;
+    await user.save();
+
+    res.status(200).json({ message: "Password reset successfully." });
+  } catch (error) {
+    next(error);
+  }
+};
+
 module.exports = {
   signupController,
   loginController,
@@ -632,4 +977,8 @@ module.exports = {
   verifyController,
   registerStaffFcmToken,
   changePasswordController,
+  requestPasswordReset,
+  verifyPasswordResetOtp,
+  resetPassword,
+  updateMyNotificationPreferences,
 };

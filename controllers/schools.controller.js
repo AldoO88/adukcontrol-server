@@ -62,7 +62,7 @@ const getAllSchools = async (req, res, next) => {
 //   POST /api/schools/:schoolId/logo  (multipart/form-data)
 const createSchool = async (req, res, next) => {
   try {
-    const { name, cct, isActive } = req.body;
+    const { name, cct, isActive, honoraryName, address, phoneNumber } = req.body;
 
     if (!name || !cct) {
       return res
@@ -70,7 +70,14 @@ const createSchool = async (req, res, next) => {
         .json({ message: "name and cct are required." });
     }
 
-    const newSchool = await School.create({ name, cct, isActive });
+    const newSchool = await School.create({
+      name,
+      cct,
+      isActive,
+      honoraryName,
+      address,
+      phoneNumber,
+    });
     res.status(201).json(newSchool);
   } catch (error) {
     next(error);
@@ -82,7 +89,7 @@ const createSchool = async (req, res, next) => {
 // El `logoUrl` NO está acá: se actualiza únicamente vía
 //   POST /api/schools/:schoolId/logo
 // (es un archivo, no un campo string)
-const ALLOWED_UPDATE_FIELDS = ["name", "isActive"];
+const ALLOWED_UPDATE_FIELDS = ["name", "cct", "isActive", "honoraryName", "address", "phoneNumber"];
 
 // ----------------------------------------------------------------------------
 // Helper privado: sube un logo a Cloudinary, crea la AssetVersion y devuelve
@@ -184,7 +191,7 @@ async function uploadLogoToCloudinary(school, file, uploadedByUserId) {
 // que tener que reintentar el logo (que es idempotente).
 const createSchoolWithLogo = async (req, res, next) => {
   try {
-    const { name, cct, isActive } = req.body;
+    const { name, cct, isActive, honoraryName, address, phoneNumber } = req.body;
 
     if (!name || !cct) {
       return res
@@ -197,6 +204,9 @@ const createSchoolWithLogo = async (req, res, next) => {
       name,
       cct,
       isActive: isActive === undefined ? true : isActive,
+      honoraryName: honoraryName || null,
+      address: address || null,
+      phoneNumber: phoneNumber || null,
     });
 
     // 2. Si NO viene logo, devolver 201 con la escuela creada

@@ -8,6 +8,7 @@ const {
   createLog,
   getAllLogs,
   getLogById,
+  updateLog,
   cancelLog,
   deleteLog,
   REPORTER_ROLES,
@@ -32,12 +33,19 @@ router.get(
 // GET /api/conduct-logs/:logId — detalle
 router.get(
   "/:logId",
-  authorize("admin", "principal", "registrar", "teacher", "prefect", "social_worker", "super_admin"),
+  authorize("admin", "principal", "registrar", "teacher", "prefect", "social_worker", "tutor", "super_admin"),
   getLogById
 );
 
-// PUT /api/conduct-logs/:logId/cancel — soft-cancel (solo dirección/registrar)
-router.put("/:logId/cancel", authorize(...CANCEL_ROLES), cancelLog);
+// PATCH /api/conduct-logs/:logId — editar descripción (solo creador)
+router.patch(
+  "/:logId",
+  authorize(...REPORTER_ROLES),
+  updateLog
+);
+
+// PUT /api/conduct-logs/:logId/cancel — soft-cancel (creador o roles autorizados)
+router.put("/:logId/cancel", authorize(...REPORTER_ROLES), cancelLog);
 
 // DELETE /api/conduct-logs/:logId — borrado físico (solo super_admin)
 router.delete("/:logId", authorize("super_admin"), deleteLog);

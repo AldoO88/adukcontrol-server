@@ -280,6 +280,17 @@ const createCitation = async (req, res, next) => {
       });
     }
 
+    // 6b) Validar que el rol pueda crear este tipo de citatorio.
+    const roleTypeRestrictions = {
+      prefect: ["behavioral", "administrative"],
+    };
+    const allowedTypesForRole = roleTypeRestrictions[req.payload.role];
+    if (allowedTypesForRole && !allowedTypesForRole.includes(type)) {
+      return res.status(403).json({
+        message: `El rol "${req.payload.role}" no puede crear citatorios de tipo "${type}".`,
+      });
+    }
+
     // 7) Validar reason.
     if (!reason || !String(reason).trim()) {
       return res.status(400).json({ message: "reason is required." });
@@ -466,6 +477,7 @@ const getAllCitations = async (req, res, next) => {
 
     const [items, total] = await Promise.all([
       populateCitation(Citation.find(filter))
+        .lean()
         .sort({ scheduledDate: -1 })
         .skip(skip)
         .limit(limitNum),
@@ -519,6 +531,7 @@ const getCitationById = async (req, res, next) => {
 // Transiciones válidas:
 //   pending    → confirmed | completed | no_show | cancelled
 //   confirmed  → completed | no_show | cancelled
+//   expired    → completed | reschedule (via endpoint separado)
 //   completed  → (terminal, no se puede cambiar)
 //   no_show    → (terminal, no se puede cambiar)
 //   cancelled  → (terminal, no se puede cambiar)
@@ -534,10 +547,10 @@ const updateCitationStatus = async (req, res, next) => {
       return res.status(404).json({ message: `No citation with id: ${id}` });
     }
 
-    if (!["pending", "confirmed", "completed", "no_show", "cancelled"].includes(status)) {
+    if (!["pending", "confirmed", "completed", "no_show", "cancelled", "expired"].includes(status)) {
       return res.status(400).json({
         message:
-          'status must be "pending", "confirmed", "completed", "no_show" or "cancelled".',
+          'status must be "pending", "confirmed", "completed", "no_show", "cancelled" or "expired".',
       });
     }
 
@@ -552,6 +565,7 @@ const updateCitationStatus = async (req, res, next) => {
     const validTransitions = {
       pending: ["confirmed", "completed", "no_show", "cancelled"],
       confirmed: ["completed", "no_show", "cancelled"],
+      expired: ["completed"],
       completed: [],
       no_show: [],
       cancelled: [],
@@ -946,33 +960,34 @@ const getMyCitations = async (req, res, next) => {
         if (Number.isNaN(d.getTime())) {
           return res.status(400).json({ message: "to is not a valid date." });
         }
-        filter.scheduledDate.$lte = d;
-      }
-    }
+         filter.scheduledDate.$lte = d;
+       }
+     }
 
-    const [items, total] = await Promise.all([
-      populateCitation(Citation.find(filter))
-        .sort({ scheduledDate: -1 })
-        .skip(skip)
-        .limit(limitNum),
-      Citation.countDocuments(filter),
-    ]);
+     const [items, total] = await Promise.all([
+       populateCitation(Citation.find(filter))
+         .lean()
+         .sort({ scheduledDate: -1 })
+         .skip(skip)
+         .limit(limitNum),
+       Citation.countDocuments(filter),
+     ]);
 
-    await enrichWithGroupName(items);
+     await enrichWithGroupName(items);
 
-    res.status(200).json({
-      items,
-      total,
-      page: pageNum,
-      limit: limitNum,
-      pages: Math.ceil(total / limitNum) || 1,
-    });
-  } catch (error) {
-    next(error);
-  }
-};
+     res.status(200).json({
+       items,
+       total,
+       page: pageNum,
+       limit: limitNum,
+       pages: Math.ceil(total / limitNum) || 1,
+     });
+   } catch (error) {
+     next(error);
+   }
+ };
 
-module.exports = {
+ module.exports = {
   createCitation,
   getAllCitations,
   getCitationById,

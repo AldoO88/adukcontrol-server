@@ -155,6 +155,13 @@ const schoolShiftSchema = new Schema(
       type: Boolean,
       default: true,
     },
+    // Timestamp de la última ejecución del cronjob de ausencias para este turno.
+    // El cron lo usa para no repetir: si absenceMarkedAt es de hoy, se salta.
+    // Se resetea al iniciar el server (limpia valores de ayer).
+    absenceMarkedAt: {
+      type: Date,
+      default: null,
+    },
   },
   {
     timestamps: true,

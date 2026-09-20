@@ -14,7 +14,7 @@ const ConductConfig = require("../models/ConductConfig.model");
 
 // Defaults cuando la escuela no tiene ConductConfig.
 const DEFAULT_CONDUCT = {
-  weights: { minor: 5, moderate: 10, severe: 20 },
+  weights: { minor: 5, moderate: 9, severe: 18 },
   merit_points: 5,
   baseline: 100,
   floor: 0,
@@ -44,7 +44,7 @@ const getConductConfig = async (schoolId) => {
 };
 
 // Devuelve la magnitud (siempre positiva) del impacto de un evento.
-//   - demerit → usa config.weights[severity]
+//   - demerit → usa config.weights[severity] (o el override si se pasa)
 //   - merit   → usa config.merit_points (o el override si se pasa)
 const getImpactForEvent = (eventType, severity, config, override) => {
   if (!config) return 0;
@@ -54,6 +54,7 @@ const getImpactForEvent = (eventType, severity, config, override) => {
   }
   // demerit
   if (!severity) return 0;
+  if (override !== undefined && override !== null) return override;
   return config.weights?.[severity] ?? 0;
 };
 

@@ -43,6 +43,26 @@ const schoolSchema = new Schema(
       ref: "SchoolYear",
       default: null,
     },
+    // Honorary name of the school (e.g. "José Clemente Orozco").
+    // Some schools are named after illustrious people, e.g.
+    // "Escuela Secundaria Técnica No. 47 — José Clemente Orozco".
+    honoraryName: {
+      type: String,
+      trim: true,
+      default: null,
+    },
+    // Physical address of the school.
+    address: {
+      type: String,
+      trim: true,
+      default: null,
+    },
+    // Phone number of the school.
+    phoneNumber: {
+      type: String,
+      trim: true,
+      default: null,
+    },
     // Educational levels offered by the school.
     // "BASIC" = Basic Education (NEM: Secondary)
     // "UPPER_SECONDARY" = Upper Secondary Education (MCCEMS: High School)
