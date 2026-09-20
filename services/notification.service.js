@@ -38,6 +38,7 @@ const CHANNELS = {
   attendance: "eduk_attendance_channel",
   citation: "eduk_citations_channel",
   announcement: "eduk_announcements_channel",
+  conduct: "eduk_conduct_channel",
 };
 
 // =====================================================================
@@ -676,6 +677,107 @@ const sendCitationRescheduleRequestNotification = async (
   return sendToStaffUser(creator, payload);
 };
 
+// =====================================================================
+// Notificaciones de CONDUCTA (a los tutores del alumno)
+// =====================================================================
+
+// Helper: arma el nombre completo del staff que creó el reporte.
+// Si el creator no tiene nombre, devuelve "Staff".
+const buildCreatorName = (creator) => {
+  if (!creator) return "Staff";
+  const first = creator.name || "";
+  const last = creator.last_name || "";
+  const full = `${first} ${last}`.trim();
+  return full || "Staff";
+};
+
+// Notifica a los tutores de un estudiante que se creó un reporte de
+// conducta (demerit o merit).
+//
+// `conductLog` debe traer el student populado ({ first_name, last_name }).
+// `creator` debe traer { name, last_name }.
+const sendConductNotification = async (conductLog, creator) => {
+  const studentId = conductLog.student_id?._id || conductLog.student_id;
+  const studentName = conductLog.student_id
+    ? `${conductLog.student_id.first_name || ""} ${conductLog.student_id.last_name || ""}`.trim()
+    : "Alumno";
+
+  const guardians = await Guardian.find({
+    students: studentId,
+    school: conductLog.school,
+  })
+    .select("fcm_token phone name user_id school")
+    .lean();
+
+  if (!guardians || guardians.length === 0) {
+    return { dispatched: 0, reason: "no_guardians" };
+  }
+
+  const creatorName = buildCreatorName(creator);
+
+  // Truncar la descripción a 180 chars (límite push Android).
+  const description =
+    conductLog.description && conductLog.description.length > 180
+      ? `${conductLog.description.slice(0, 177)}...`
+      : conductLog.description || "";
+
+  const payload = {
+    title: `Reporte de conducta: ${studentName}`,
+    body: `${creatorName} reportó: ${description}`,
+    channelId: CHANNELS.conduct,
+    data: {
+      kind: "conduct_report",
+      conduct_log_id: String(conductLog._id),
+      student_id: String(studentId),
+      severity: conductLog.severity || null,
+      eventType: conductLog.eventType,
+    },
+  };
+
+  console.log(
+    `[conduct] Dispatching report notification for ${studentName} by ${creatorName} to ${guardians.length} guardian(s)`
+  );
+  return dispatchToGuardians(guardians, payload, "conduct");
+};
+
+// Notifica a los tutores de un estudiante que un reporte de conducta
+// fue cancelado (soft-cancel por admin o creator).
+const sendConductCancelledNotification = async (conductLog, creator) => {
+  const studentId = conductLog.student_id?._id || conductLog.student_id;
+  const studentName = conductLog.student_id
+    ? `${conductLog.student_id.first_name || ""} ${conductLog.student_id.last_name || ""}`.trim()
+    : "Alumno";
+
+  const guardians = await Guardian.find({
+    students: studentId,
+    school: conductLog.school,
+  })
+    .select("fcm_token phone name user_id school")
+    .lean();
+
+  if (!guardians || guardians.length === 0) {
+    return { dispatched: 0, reason: "no_guardians" };
+  }
+
+  const creatorName = buildCreatorName(creator);
+
+  const payload = {
+    title: `Reporte cancelado: ${studentName}`,
+    body: `${creatorName} canceló un reporte de conducta.`,
+    channelId: CHANNELS.conduct,
+    data: {
+      kind: "conduct_cancelled",
+      conduct_log_id: String(conductLog._id),
+      student_id: String(studentId),
+    },
+  };
+
+  console.log(
+    `[conduct] Dispatching cancellation notification for ${studentName} by ${creatorName} to ${guardians.length} guardian(s)`
+  );
+  return dispatchToGuardians(guardians, payload, "conduct");
+};
+
 module.exports = {
   // Note: initializeFirebase e isFirebaseReady se mantienen en module.exports
   // como no-ops para no romper imports legacy. En realidad ya no se usan.
@@ -692,6 +794,8 @@ module.exports = {
   sendCitationConfirmedNotification,
   sendCitationRescheduleRequestNotification,
   sendAnnouncementNotification,
+  sendConductNotification,
+  sendConductCancelledNotification,
 
   // Constantes exportadas (por si los controllers o tests las necesitan)
   CHANNELS,

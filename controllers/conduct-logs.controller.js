@@ -10,6 +10,7 @@ const mongoose = require("mongoose");
 const ConductLog = require("../models/ConductLog.model");
 const Student = require("../models/Student.model");
 const SchoolYear = require("../models/SchoolYear.model");
+const User = require("../models/User.model");
 const {
   getConductConfig,
   getImpactForEvent,
@@ -18,6 +19,7 @@ const {
   invalidateStudentDashboardCache,
 } = require("../services/dashboard-cache.service");
 const { getConductKpi } = require("../services/student-kpi.service");
+const notificationService = require("../services/notification.service");
 
 // Helper: filtro de tenant según el role del usuario
 const tenantFilter = (req) =>
@@ -171,6 +173,27 @@ const createLog = async (req, res, next) => {
       .populate("reported_by", "name email role")
       .populate("student_id", "controlNumber first_name last_name")
       .populate("school_year_id", "name startDate endDate isActive");
+
+    // Disparar push + campanita a los tutores del alumno (best-effort,
+    // en background). NO bloquea el response del POST.
+    process.nextTick(async () => {
+      try {
+        // Re-populamos el student para tener first_name/last_name en el payload.
+        const populatedForPush = await ConductLog.findById(log._id)
+          .populate("reported_by", "name last_name email role")
+          .populate("student_id", "first_name last_name school")
+          .lean();
+        await notificationService.sendConductNotification(
+          populatedForPush,
+          populatedForPush?.reported_by
+        );
+      } catch (notifErr) {
+        console.error(
+          "[conduct-logs] Failed to dispatch conduct notification:",
+          notifErr.message
+        );
+      }
+    });
 
     res.status(201).json(populated);
   } catch (error) {
@@ -378,6 +401,26 @@ const cancelLog = async (req, res, next) => {
       .populate("reported_by", "name email role")
       .populate("student_id", "controlNumber first_name last_name")
       .populate("school_year_id", "name startDate endDate isActive");
+
+    // Disparar push + campanita a los tutores avisando de la cancelación
+    // (best-effort, en background).
+    process.nextTick(async () => {
+      try {
+        const populatedForPush = await ConductLog.findById(log._id)
+          .populate("reported_by", "name last_name email role")
+          .populate("student_id", "first_name last_name school")
+          .lean();
+        await notificationService.sendConductCancelledNotification(
+          populatedForPush,
+          populatedForPush?.reported_by
+        );
+      } catch (notifErr) {
+        console.error(
+          "[conduct-logs] Failed to dispatch cancel notification:",
+          notifErr.message
+        );
+      }
+    });
 
     res.status(200).json({
       message: "Conduct log cancelled successfully.",
