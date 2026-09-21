@@ -82,6 +82,7 @@ const signupController = async (req, res, next) => {
       student_ids,
       sex,
       whatsapp_opt_in,
+      academicPreparation,
     } = req.body;
 
     // === Validaciones universales ===
@@ -105,13 +106,18 @@ const signupController = async (req, res, next) => {
         .json({ message: "school is required for non super_admin users." });
     }
 
-    // password: requerido para staff y super_admin, opcional para tutor
-    if (role !== "tutor" && !password) {
+    // password: requerido solo para super_admin y admin; otros roles se activan vía OTP
+    if (role !== "super_admin" && role !== "admin" && !password) {
+      // password es opcional — el usuario lo establece después vía OTP
+    } else if (role !== "super_admin" && role !== "admin" && password && password.length < 8) {
       return res
         .status(400)
-        .json({ message: "password is required for staff and super_admin." });
-    }
-    if (password !== undefined && password.length < 8) {
+        .json({ message: "Password must be at least 8 characters long." });
+    } else if ((role === "super_admin" || role === "admin") && !password) {
+      return res
+        .status(400)
+        .json({ message: "password is required for super_admin and admin." });
+    } else if (password !== undefined && password.length < 8) {
       return res
         .status(400)
         .json({ message: "Password must be at least 8 characters long." });
@@ -197,11 +203,12 @@ const signupController = async (req, res, next) => {
       name: name.trim(),
       last_name: last_name ? last_name.trim() : null,
       email: email || undefined,
-      password,
+      ...(password ? { password } : {}),
       role,
       school: school || null,
       phoneNumber: phoneNumber.trim(),
       sex: sex || null,
+      academicPreparation: academicPreparation || [],
       ...(Object.keys(notificationPrefs).length > 0 ? { notification_prefs: notificationPrefs } : {}),
     });
 

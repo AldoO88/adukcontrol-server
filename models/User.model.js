@@ -133,6 +133,12 @@ const userSchema = new Schema(
       },
       default: "BASE",
     },
+    // Teacher's academic preparation (e.g., Licenciatura, Maestría, Doctorado).
+    // Array of strings — a teacher may hold multiple degrees.
+    academicPreparation: {
+      type: [String],
+      default: [],
+    },
     // Firebase Cloud Messaging token for push notifications.
     // Used by staff mobile app to receive notifications (e.g., when a
     // guardian confirms or requests reschedule of a citation).

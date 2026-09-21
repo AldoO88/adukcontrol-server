@@ -277,7 +277,7 @@ const getSchoolTeachers = async (req, res, next) => {
       school: schoolId,
       role: "teacher",
     })
-      .select("_id name last_name email phoneNumber isActive")
+      .select("_id name last_name email phoneNumber isActive sex academicPreparation")
       .sort({ last_name: 1, name: 1 })
       .lean();
 
@@ -443,6 +443,51 @@ const getPendingTasks = async (req, res, next) => {
   }
 };
 
+// PUT /api/dashboard/super-admin/schools/:schoolId/teachers/:teacherId
+// Actualiza datos de un maestro (name, last_name, phoneNumber, email, sex,
+// academicPreparation, isActive). Auth: super_admin.
+const updateTeacher = async (req, res, next) => {
+  try {
+    const { schoolId, teacherId } = req.params;
+
+    if (!mongoose.Types.ObjectId.isValid(schoolId) || !mongoose.Types.ObjectId.isValid(teacherId)) {
+      return res.status(400).json({ message: "Invalid schoolId or teacherId." });
+    }
+
+    const school = await School.findById(schoolId).select("_id").lean();
+    if (!school) {
+      return res.status(404).json({ message: "School not found." });
+    }
+
+    const user = await User.findOne({ _id: teacherId, school: schoolId, role: "teacher" });
+    if (!user) {
+      return res.status(404).json({ message: "Teacher not found." });
+    }
+
+    const allowedFields = ["name", "last_name", "phoneNumber", "email", "sex", "academicPreparation", "isActive"];
+    const updates = {};
+    for (const field of allowedFields) {
+      if (req.body[field] !== undefined) {
+        updates[field] = req.body[field];
+      }
+    }
+
+    if (Object.keys(updates).length === 0) {
+      return res.status(400).json({ message: "No valid fields to update." });
+    }
+
+    const updated = await User.findOneAndUpdate(
+      { _id: teacherId, school: schoolId },
+      { $set: updates },
+      { new: true, runValidators: true }
+    ).select("_id name last_name email phoneNumber isActive sex academicPreparation");
+
+    res.status(200).json({ teacher: updated });
+  } catch (error) {
+    next(error);
+  }
+};
+
 module.exports = {
   getSuperAdminDashboard,
   getSchoolSetupStatus,
@@ -450,4 +495,5 @@ module.exports = {
   getSchoolGroups,
   getSchoolTeacherSubjects,
   getPendingTasks,
+  updateTeacher,
 };
