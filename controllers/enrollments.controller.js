@@ -199,10 +199,254 @@ const deleteEnrollment = async (req, res, next) => {
   }
 };
 
+// POST /api/enrollments/import
+// Carga masiva desde Excel/CSV. Body: { file } (multipart) +
+// { school_year_id } en el body.
+//
+// Excel esperado (columnas en cualquier orden; case-insensitive):
+//   controlNumber | group   | name (opcional)
+// Ejemplo:
+//   controlNumber  group    name
+//   2510049092     1A       Juan Pérez
+//
+// group puede ser "1A", "2B", etc. (la función busca el Group cuyo
+// grade === 1er dígito y section === resto).
+const XLSX = require("xlsx");
+const Group = require("../models/Group.model");
+const SchoolYear = require("../models/SchoolYear.model");
+
+const importEnrollmentsFromSpreadsheet = async (req, res, next) => {
+  try {
+    if (!req.file || !req.file.buffer) {
+      return res.status(400).json({ message: "Excel file is required." });
+    }
+
+    const { school_year_id, school: schoolBody } = req.body || {};
+    const isSuperAdmin = req.payload.role === "super_admin";
+    const school = isSuperAdmin ? schoolBody : req.payload.schoolId;
+
+    if (!school) {
+      return res
+        .status(400)
+        .json({ message: "school is required (super_admin must pass it in body)." });
+    }
+
+    if (
+      !school_year_id ||
+      !mongoose.Types.ObjectId.isValid(school_year_id)
+    ) {
+      return res.status(400).json({ message: "Valid school_year_id is required." });
+    }
+
+    // Parsea el spreadsheet (xlsx/xls/csv).
+    let workbook;
+    try {
+      workbook = XLSX.read(req.file.buffer, { type: "buffer" });
+    } catch (err) {
+      return res
+        .status(400)
+        .json({ message: `Invalid spreadsheet: ${err.message}` });
+    }
+
+    const sheetName = workbook.SheetNames[0];
+    if (!sheetName) {
+      return res.status(400).json({ message: "Spreadsheet has no sheets." });
+    }
+
+    const rows = XLSX.utils.sheet_to_json(workbook.Sheets[sheetName], {
+      defval: "",
+    });
+
+    if (rows.length === 0) {
+      return res.status(400).json({ message: "Spreadsheet has no data rows." });
+    }
+
+    if (rows.length > 1000) {
+      return res
+        .status(400)
+        .json({ message: "Maximum 1000 rows per import." });
+    }
+
+    // Normaliza las keys de la primera fila para encontrar
+    // controlNumber y group (case-insensitive).
+    const normalizeKey = (s) =>
+      String(s || "")
+        .toLowerCase()
+        .trim()
+        .replace(/[^a-z0-9]/g, "");
+
+    const rowKeyMap = (row) => {
+      const out = {};
+      for (const k of Object.keys(row)) {
+        out[normalizeKey(k)] = row[k];
+      }
+      return out;
+    };
+
+    // Pre-cargar grupos y alumnos (cache por controlNumber y por
+    // grade+section) para evitar N queries por fila.
+    const groups = await Group.find({
+      school,
+      school_year_id,
+    })
+      .select("_id grade section")
+      .lean();
+
+    const groupByLabel = new Map();
+    for (const g of groups) {
+      const label = `${g.grade}${g.section.toUpperCase()}`;
+      groupByLabel.set(label, g._id.toString());
+    }
+
+    const controlNumbers = rows
+      .map((r) => String(rowKeyMap(r).controlnumber || "").trim())
+      .filter(Boolean);
+
+    const students = await Student.find({
+      school,
+      controlNumber: { $in: controlNumbers },
+    })
+      .select("_id controlNumber")
+      .lean();
+
+    const studentByCN = new Map();
+    for (const s of students) {
+      studentByCN.set(s.controlNumber, s._id.toString());
+    }
+
+    const results = [];
+    const toCreate = [];
+
+    for (let i = 0; i < rows.length; i++) {
+      const row = rows[i];
+      const idx = i;
+      const keys = rowKeyMap(row);
+      const cn = String(keys.controlnumber || "").trim();
+      const grp = String(keys.group || "").trim().toUpperCase();
+
+      if (!cn) {
+        results.push({
+          index: idx,
+          status: "error",
+          errors: ["controlNumber is required"],
+        });
+        continue;
+      }
+      if (!grp) {
+        results.push({
+          index: idx,
+          status: "error",
+          errors: ["group is required"],
+        });
+        continue;
+      }
+
+      const studentId = studentByCN.get(cn);
+      if (!studentId) {
+        results.push({
+          index: idx,
+          status: "error",
+          controlNumber: cn,
+          errors: ["Student not found in this school"],
+        });
+        continue;
+      }
+
+      const groupId = groupByLabel.get(grp);
+      if (!groupId) {
+        results.push({
+          index: idx,
+          status: "error",
+          controlNumber: cn,
+          group: grp,
+          errors: [`Group "${grp}" not found in this cycle`],
+        });
+        continue;
+      }
+
+      toCreate.push({ index: idx, studentId, groupId, controlNumber: cn });
+    }
+
+    // Crear las válidas (best-effort; ignora unique-constraint conflicts
+    // porque ya existe una inscripción).
+    const created = [];
+    for (const item of toCreate) {
+      try {
+        const doc = await Enrollment.create({
+          school,
+          school_year_id,
+          student_id: item.studentId,
+          group_id: item.groupId,
+          cycle_status: "enrolled",
+        });
+        created.push({
+          index: item.index,
+          status: "ok",
+          controlNumber: item.controlNumber,
+          _id: doc._id,
+        });
+      } catch (err) {
+        if (err.code === 11000) {
+          results.push({
+            index: item.index,
+            status: "error",
+            controlNumber: item.controlNumber,
+            errors: ["Already enrolled in this cycle"],
+          });
+        } else {
+          results.push({
+            index: item.index,
+            status: "error",
+            controlNumber: item.controlNumber,
+            errors: [err.message],
+          });
+        }
+      }
+    }
+
+    // Sincronizar Student.current_group_id para los creados.
+    // Para cada Enrollment creada, obtenemos el student_id del propio
+    // doc (insertado con .create arriba) y sincronizamos el cache.
+    await Promise.all(
+      created.map((c) =>
+        Enrollment.findById(c._id)
+          .select("student_id group_id school_year_id school")
+          .lean()
+          .then((full) => {
+            if (full) {
+              return syncStudentCurrentGroup(
+                full.student_id,
+                full.group_id,
+                full.school_year_id,
+                full.school
+              );
+            }
+          })
+          .catch(() => null)
+      )
+    );
+
+    // Combinar y ordenar
+    const allResults = [...results, ...created].sort(
+      (a, b) => a.index - b.index
+    );
+
+    res.status(200).json({
+      total: rows.length,
+      succeeded: created.length,
+      failed: results.length,
+      results: allResults,
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
 module.exports = {
   getAllEnrollments,
   createEnrollment,
   getEnrollmentById,
   updateEnrollment,
   deleteEnrollment,
+  importEnrollmentsFromSpreadsheet,
 };
