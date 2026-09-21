@@ -26,7 +26,7 @@ router.use(isAuthenticated);
 // GET /api/groups — listar todos los grupos (con filtros opcionales school_year_id, grade, section)
 router.get(
   "/",
-  authorize("admin", "principal", "registrar", "teacher", "prefect", "social_worker"),
+  authorize("admin", "principal", "registrar", "teacher", "prefect", "social_worker", "super_admin"),
   getAllGroups
 );
 
@@ -36,7 +36,7 @@ router.post("/", authorize("admin", "registrar"), createGroup);
 // GET /api/groups/:groupId/students — DEBE ir antes que /:groupId
 router.get(
   "/:groupId/students",
-  authorize("admin", "principal", "registrar", "teacher", "prefect", "social_worker"),
+  authorize("admin", "principal", "registrar", "teacher", "prefect", "social_worker", "super_admin"),
   getGroupStudents
 );
 
@@ -45,14 +45,14 @@ router.get(
   "/:groupId/schedule",
   attachSchoolContext,
   attachActiveSchoolYear,
-  authorize("admin", "principal", "registrar", "teacher", "prefect", "social_worker"),
+  authorize("admin", "principal", "registrar", "teacher", "prefect", "social_worker", "super_admin"),
   getGroupSchedule
 );
 
 // GET /api/groups/:groupId — detalle de un grupo
 router.get(
   "/:groupId",
-  authorize("admin", "principal", "registrar", "teacher", "prefect", "social_worker"),
+  authorize("admin", "principal", "registrar", "teacher", "prefect", "social_worker", "super_admin"),
   getGroupById
 );
 

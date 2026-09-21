@@ -35,7 +35,7 @@ const router = Router();
 
 // Todas las rutas requieren JWT + role social_worker
 router.use(isAuthenticated);
-router.use(authorize("social_worker"));
+router.use(authorize("social_worker", "super_admin"));
 router.use(attachSchoolContext);
 router.use(attachActiveSchoolYear);
 

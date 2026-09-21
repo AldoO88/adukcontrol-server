@@ -46,7 +46,7 @@ router.use(isAuthenticated);
 
 router.get(
   "/me/groups",
-  authorize("teacher"),
+  authorize("teacher", "super_admin"),
   attachSchoolContext,
   attachActiveSchoolYear,
   getMyGroups
@@ -54,7 +54,7 @@ router.get(
 
 router.get(
   "/me/dashboard",
-  authorize("teacher"),
+  authorize("teacher", "super_admin"),
   attachSchoolContext,
   attachActiveSchoolYear,
   getTeacherDashboard
@@ -62,7 +62,7 @@ router.get(
 
 router.get(
   "/me/schedule",
-  authorize("teacher"),
+  authorize("teacher", "super_admin"),
   attachSchoolContext,
   attachActiveSchoolYear,
   getTeacherSchedule
@@ -70,7 +70,7 @@ router.get(
 
 router.get(
   "/me/attendance-summary",
-  authorize("teacher"),
+  authorize("teacher", "super_admin"),
   attachSchoolContext,
   attachActiveSchoolYear,
   getTeacherAttendanceSummary
@@ -78,7 +78,7 @@ router.get(
 
 router.get(
   "/me/groups-with-schedule",
-  authorize("teacher"),
+  authorize("teacher", "super_admin"),
   attachSchoolContext,
   attachActiveSchoolYear,
   getMyGroupsWithSchedule
@@ -86,7 +86,7 @@ router.get(
 
 router.get(
   "/me/group-students-summary",
-  authorize("teacher"),
+  authorize("teacher", "super_admin"),
   attachSchoolContext,
   attachActiveSchoolYear,
   getGroupStudentsSummary
@@ -94,7 +94,7 @@ router.get(
 
 router.get(
   "/me/student-file",
-  authorize("teacher"),
+  authorize("teacher", "super_admin"),
   attachSchoolContext,
   attachActiveSchoolYear,
   getStudentFile
@@ -102,7 +102,7 @@ router.get(
 
 router.get(
   "/me/student-tutoria-file",
-  authorize("teacher"),
+  authorize("teacher", "super_admin"),
   attachSchoolContext,
   attachActiveSchoolYear,
   getStudentTutoriaFile
@@ -112,7 +112,7 @@ router.get(
 // Pantalla "Validación de Calificaciones" del front.
 router.get(
   "/me/grades/validation",
-  authorize("teacher"),
+  authorize("teacher", "super_admin"),
   attachSchoolContext,
   attachActiveSchoolYear,
   getGradesValidation
@@ -120,7 +120,7 @@ router.get(
 
 router.get(
   "/me/groups/:groupId/students",
-  authorize("teacher"),
+  authorize("teacher", "super_admin"),
   attachSchoolContext,
   attachActiveSchoolYear,
   getGroupStudents
@@ -128,7 +128,7 @@ router.get(
 
 router.post(
   "/me/attendance",
-  authorize("teacher"),
+  authorize("teacher", "super_admin"),
   attachSchoolContext,
   attachActiveSchoolYear,
   saveAttendance
@@ -136,7 +136,7 @@ router.post(
 
 router.get(
   "/me/grading-periods",
-  authorize("teacher"),
+  authorize("teacher", "super_admin"),
   attachSchoolContext,
   attachActiveSchoolYear,
   getGradingPeriods
@@ -144,7 +144,7 @@ router.get(
 
 router.get(
   "/me/attendance-sessions",
-  authorize("teacher"),
+  authorize("teacher", "super_admin"),
   attachSchoolContext,
   attachActiveSchoolYear,
   getAttendanceSessions
@@ -152,7 +152,7 @@ router.get(
 
 router.post(
   "/me/attendance-sessions",
-  authorize("teacher"),
+  authorize("teacher", "super_admin"),
   attachSchoolContext,
   attachActiveSchoolYear,
   createAttendanceSession
@@ -160,7 +160,7 @@ router.post(
 
 router.patch(
   "/me/attendance-sessions/:sessionId/records/:studentId",
-  authorize("teacher"),
+  authorize("teacher", "super_admin"),
   attachSchoolContext,
   attachActiveSchoolYear,
   updateAttendanceRecord
@@ -170,7 +170,7 @@ router.patch(
 
 router.get(
   "/me/grade-config",
-  authorize("teacher"),
+  authorize("teacher", "super_admin"),
   attachSchoolContext,
   attachActiveSchoolYear,
   getGradeConfig
@@ -178,7 +178,7 @@ router.get(
 
 router.put(
   "/me/grade-config",
-  authorize("teacher"),
+  authorize("teacher", "super_admin"),
   attachSchoolContext,
   attachActiveSchoolYear,
   upsertGradeConfig
@@ -186,7 +186,7 @@ router.put(
 
 router.get(
   "/me/evaluation-types",
-  authorize("teacher"),
+  authorize("teacher", "super_admin"),
   attachSchoolContext,
   attachActiveSchoolYear,
   getEvaluationTypes
@@ -194,7 +194,7 @@ router.get(
 
 router.post(
   "/me/evaluation-types",
-  authorize("teacher"),
+  authorize("teacher", "super_admin"),
   attachSchoolContext,
   attachActiveSchoolYear,
   createEvaluationType
@@ -202,7 +202,7 @@ router.post(
 
 router.delete(
   "/me/evaluation-types/:evaluationTypeId",
-  authorize("teacher"),
+  authorize("teacher", "super_admin"),
   attachSchoolContext,
   attachActiveSchoolYear,
   deleteEvaluationType
@@ -210,7 +210,7 @@ router.delete(
 
 router.put(
   "/me/evaluation-types/:evaluationTypeId",
-  authorize("teacher"),
+  authorize("teacher", "super_admin"),
   attachSchoolContext,
   attachActiveSchoolYear,
   updateEvaluationType
@@ -218,7 +218,7 @@ router.put(
 
 router.get(
   "/me/grades",
-  authorize("teacher"),
+  authorize("teacher", "super_admin"),
   attachSchoolContext,
   attachActiveSchoolYear,
   getGrades
@@ -226,7 +226,7 @@ router.get(
 
 router.post(
   "/me/grades",
-  authorize("teacher"),
+  authorize("teacher", "super_admin"),
   attachSchoolContext,
   attachActiveSchoolYear,
   saveGrade
@@ -234,7 +234,7 @@ router.post(
 
 router.post(
   "/me/grades/close",
-  authorize("teacher"),
+  authorize("teacher", "super_admin"),
   attachSchoolContext,
   attachActiveSchoolYear,
   closeGrades
@@ -242,7 +242,7 @@ router.post(
 
 router.post(
   "/me/grades/open",
-  authorize("teacher"),
+  authorize("teacher", "super_admin"),
   attachSchoolContext,
   attachActiveSchoolYear,
   openGrades

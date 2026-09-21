@@ -94,7 +94,7 @@ const router = Router();
 
 // Todas las rutas requieren JWT + role principal (Director)
 router.use(isAuthenticated);
-router.use(authorize("principal"));
+router.use(authorize("principal", "super_admin"));
 router.use(attachSchoolContext);
 router.use(attachActiveSchoolYear);
 

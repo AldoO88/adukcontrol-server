@@ -22,7 +22,7 @@ const router = Router();
 
 // Todas las rutas requieren JWT + role prefect
 router.use(isAuthenticated);
-router.use(authorize("prefect"));
+router.use(authorize("prefect", "super_admin"));
 router.use(attachSchoolContext);
 router.use(attachActiveSchoolYear);
 

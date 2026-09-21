@@ -15,9 +15,9 @@ const router = Router();
 
 router.use(isAuthenticated);
 
-router.get("/", authorize("admin", "principal", "registrar", "teacher", "prefect", "social_worker"), getAllSubjects);
+router.get("/", authorize("admin", "principal", "registrar", "teacher", "prefect", "social_worker", "super_admin"), getAllSubjects);
 router.post("/", authorize("admin", "registrar"), createSubject);
-router.get("/:subjectId", authorize("admin", "principal", "registrar", "teacher", "prefect", "social_worker"), getSubjectById);
+router.get("/:subjectId", authorize("admin", "principal", "registrar", "teacher", "prefect", "social_worker", "super_admin"), getSubjectById);
 router.put("/:subjectId", authorize("admin", "registrar"), updateSubject);
 router.delete("/:subjectId", authorize("admin", "registrar"), deleteSubject);
 
