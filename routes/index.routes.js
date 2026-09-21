@@ -28,6 +28,7 @@ const notificationsRouter = require("./notifications.routes"); // /api/me/notifi
 const schoolShiftsRouter = require("./school-shifts.routes"); // /api/school-shifts (turnos / campanas)
 const classSchedulesRouter = require("./class-schedules.routes"); // /api/class-schedules (horarios de clase)
 const gradingPeriodsRouter = require("./grading-periods.routes"); // /api/grading-periods (períodos de evaluación)
+const studentsCredentialsRouter = require("./students-credentials.routes"); // /api/students/credentials (credenciales PDF)
 const dashboardRouter = require("./dashboard.routes"); // /api/dashboard (stats super admin)
 
 // Health check rápido bajo /api
@@ -59,6 +60,7 @@ router.use("/", notificationsRouter); // /api/me/notifications/...
 router.use("/school-shifts", schoolShiftsRouter);
 router.use("/class-schedules", classSchedulesRouter);
 router.use("/grading-periods", gradingPeriodsRouter);
+router.use("/students/credentials", studentsCredentialsRouter);
 router.use("/dashboard", dashboardRouter);
 // Calificaciones: rutas anidadas bajo students + rutas planas en /grades
 router.use("/students/:studentId/grades", studentOnlyGrades);
