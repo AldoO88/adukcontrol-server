@@ -488,12 +488,39 @@ const updateTeacher = async (req, res, next) => {
   }
 };
 
+// GET /api/dashboard/super-admin/schools/:schoolId/users
+// Lista todos los usuarios de la escuela (admin, registrar, teacher, etc.).
+const getSchoolUsers = async (req, res, next) => {
+  try {
+    const { schoolId } = req.params;
+
+    if (!mongoose.Types.ObjectId.isValid(schoolId)) {
+      return res.status(400).json({ message: "Invalid schoolId." });
+    }
+
+    const school = await School.findById(schoolId).select("_id").lean();
+    if (!school) {
+      return res.status(404).json({ message: "School not found." });
+    }
+
+    const users = await User.find({ school: schoolId })
+      .select("_id name last_name email phoneNumber role isActive sex")
+      .sort({ role: 1, name: 1 })
+      .lean();
+
+    res.status(200).json({ items: users });
+  } catch (error) {
+    next(error);
+  }
+};
+
 module.exports = {
   getSuperAdminDashboard,
   getSchoolSetupStatus,
   getSchoolTeachers,
   getSchoolGroups,
   getSchoolTeacherSubjects,
+  getSchoolUsers,
   getPendingTasks,
   updateTeacher,
 };
