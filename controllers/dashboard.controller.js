@@ -358,10 +358,96 @@ const getSchoolTeacherSubjects = async (req, res, next) => {
   }
 };
 
+// GET /api/dashboard/super-admin/pending-tasks
+// Lista de "Tareas pendientes" para el super_admin: escuelas sin
+// ciclo activo, sin turnos, sin calendario, sin materias, sin
+// maestros, sin grupos, etc. Auth: super_admin.
+const getPendingTasks = async (req, res, next) => {
+  try {
+    // Lista base de todas las escuelas (excluir super_admin usa school=null)
+    const schools = await School.find()
+      .select("_id name cct isActive current_school_year_id")
+      .lean();
+
+    const tasks = [];
+    for (const school of schools) {
+      const schoolId = school._id;
+      // Resolver cycle activo
+      let yearId = school.current_school_year_id;
+      if (!yearId) {
+        // buscar el más reciente activo
+        const latest = await SchoolYear.findOne({
+          school: schoolId,
+        })
+          .sort({ startDate: -1 })
+          .select("_id")
+          .lean();
+        yearId = latest?._id || null;
+      }
+
+      // Conteos
+      const [shifts, calendarDays, subjects, teachers, groups, schedules] =
+        yearId
+          ? await Promise.all([
+              SchoolShift.countDocuments({ school: schoolId, school_year_id: yearId }),
+              SchoolCalendar.countDocuments({ school: schoolId, is_active: true }),
+              Subject.countDocuments({ school: schoolId }),
+              User.countDocuments({ school: schoolId, role: "teacher" }),
+              Group.countDocuments({ school: schoolId, school_year_id: yearId }),
+              ClassSchedule.countDocuments({ school: schoolId, school_year_id: yearId }),
+            ])
+          : [0, 0, 0, 0, 0, 0];
+
+      const issues = [];
+      if (!school.isActive) issues.push({ kind: "school_inactive", message: "Escuela inactiva" });
+      if (!yearId) issues.push({ kind: "no_active_cycle", message: "Sin ciclo escolar activo" });
+      if (shifts === 0) issues.push({ kind: "no_shifts", message: "Sin turnos configurados" });
+      if (calendarDays === 0) issues.push({ kind: "no_calendar", message: "Sin días en el calendario escolar" });
+      if (subjects === 0) issues.push({ kind: "no_subjects", message: "Sin materias registradas" });
+      if (teachers === 0) issues.push({ kind: "no_teachers", message: "Sin maestros registrados" });
+      if (groups === 0) issues.push({ kind: "no_groups", message: "Sin grupos registrados" });
+      if (schedules === 0) issues.push({ kind: "no_schedules", message: "Sin horarios de clase" });
+
+      if (issues.length > 0) {
+        tasks.push({
+          school_id: schoolId,
+          school_name: school.name,
+          school_year_id: yearId,
+          school_year_name: null,
+          issues,
+        });
+      }
+    }
+
+    // Enriquecer con nombre del ciclo
+    if (tasks.length > 0) {
+      const yearIds = tasks
+        .map((t) => t.school_year_id)
+        .filter(Boolean);
+      if (yearIds.length > 0) {
+        const years = await SchoolYear.find({ _id: { $in: yearIds } })
+          .select("_id name")
+          .lean();
+        const yearMap = new Map(years.map((y) => [String(y._id), y.name]));
+        for (const t of tasks) {
+          if (t.school_year_id) {
+            t.school_year_name = yearMap.get(String(t.school_year_id)) || null;
+          }
+        }
+      }
+    }
+
+    res.status(200).json({ tasks, total_schools: schools.length });
+  } catch (error) {
+    next(error);
+  }
+};
+
 module.exports = {
   getSuperAdminDashboard,
   getSchoolSetupStatus,
   getSchoolTeachers,
   getSchoolGroups,
   getSchoolTeacherSubjects,
+  getPendingTasks,
 };

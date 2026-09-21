@@ -7,6 +7,7 @@ const {
   getSchoolTeachers,
   getSchoolGroups,
   getSchoolTeacherSubjects,
+  getPendingTasks,
 } = require("../controllers/dashboard.controller");
 const { isAuthenticated } = require("../middleware/jwt.middleware");
 const { authorize } = require("../middleware/authorize.middleware");
@@ -31,5 +32,8 @@ router.get("/super-admin/schools/:schoolId/groups", getSchoolGroups);
 
 // GET /api/dashboard/super-admin/schools/:schoolId/teacher-subjects — asignaciones
 router.get("/super-admin/schools/:schoolId/teacher-subjects", getSchoolTeacherSubjects);
+
+// GET /api/dashboard/super-admin/pending-tasks — lista de tareas pendientes
+router.get("/super-admin/pending-tasks", getPendingTasks);
 
 module.exports = router;
