@@ -78,6 +78,8 @@ const notificationSchema = new Schema(
         "citation_confirmed",        // tutor confirmó (→ staff)
         "citation_reschedule_request", // tutor pide reagendar (→ staff)
         "announcement",              // aviso general/grupo/alumno
+        "conduct_report",            // reporte de conducta nuevo
+        "conduct_cancelled",         // reporte de conducta cancelado
       ],
       required: true,
       index: true,

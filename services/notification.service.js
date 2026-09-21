@@ -156,15 +156,14 @@ const dispatchToGuardians = async (guardians, payload, logTag) => {
     }
   }
   const tokens = [...tokenToGuardian.keys()];
-  if (tokens.length === 0) {
-    return { dispatched: 0, reason: "no_tokens" };
-  }
+  // NOTA: aunque no haya tokens (guardian sin app abierta todavía), la
+  // campanita in-app SÍ debe poblarse para que cuando el tutor abra
+  // la app la próxima vez, vea la notificación. Por eso persistimos
+  // ANTES de (y aunque) enviar los pushes.
 
-  const result = await sendToTokens(tokens, payload);
-
-  // Persistir cada push enviada en la campanita in-app (solo para
-  // guardians ACTIVADOS con user_id). Best-effort: si la persistencia
-  // falla, el push ya se mandó — loggeamos pero no fallamos.
+  // Persistir cada push en la campanita in-app (solo para guardians
+  // ACTIVADOS con user_id). Best-effort: si la persistencia falla,
+  // loggeamos pero no fallamos el envío.
   const persistedUserIds = new Set();
   for (const [userIdStr, guardian] of userIdToGuardian.entries()) {
     if (persistedUserIds.has(userIdStr)) continue;
@@ -186,6 +185,14 @@ const dispatchToGuardians = async (guardians, payload, logTag) => {
       );
     }
   }
+
+  // Si no hay tokens, retornamos temprano DESPUÉS de persistir
+  // (porque la campanita ya quedó poblada).
+  if (tokens.length === 0) {
+    return { dispatched: 0, reason: "no_tokens", persisted: persistedUserIds.size };
+  }
+
+  const result = await sendToTokens(tokens, payload);
 
   // Invalidar tokens stale: Expo responde "DeviceNotRegistered" cuando
   // el usuario desinstaló la app o el token expiró. Marcamos como null
@@ -219,6 +226,7 @@ const dispatchToGuardians = async (guardians, payload, logTag) => {
     failed: result.failureCount,
     tokens: tokens.length,
     invalidated,
+    persisted: persistedUserIds.size,
   };
 };
 
@@ -233,7 +241,7 @@ const sendAttendanceNotification = async (student, attendanceLog) => {
     students: student._id,
     school: student.school,
   })
-    .select("fcm_token phone name")
+    .select("fcm_token phone name user_id school")
     .lean();
 
   if (!guardians || guardians.length === 0) {
@@ -279,7 +287,7 @@ const sendAbsenceNotification = async (student, attendanceLog) => {
     students: student._id,
     school: student.school,
   })
-    .select("fcm_token phone name")
+    .select("fcm_token phone name user_id school")
     .lean();
 
   if (!guardians || guardians.length === 0) {
@@ -336,7 +344,7 @@ const sendCitationNotification = async (citation) => {
     students: studentId,
     school: citation.school,
   })
-    .select("fcm_token phone name")
+    .select("fcm_token phone name user_id school")
     .lean();
 
   if (!guardians || guardians.length === 0) {
@@ -390,7 +398,7 @@ const sendCitationRescheduledNotification = async (citation) => {
     students: studentId,
     school: citation.school,
   })
-    .select("fcm_token phone name")
+    .select("fcm_token phone name user_id school")
     .lean();
 
   if (!guardians || guardians.length === 0) {
@@ -436,7 +444,7 @@ const sendCitationCancelledNotification = async (citation) => {
     students: studentId,
     school: citation.school,
   })
-    .select("fcm_token phone name")
+    .select("fcm_token phone name user_id school")
     .lean();
 
   if (!guardians || guardians.length === 0) {
@@ -516,7 +524,7 @@ const sendAnnouncementNotification = async (announcement) => {
     school: announcement.school,
     students: { $in: studentIds },
   })
-    .select("fcm_token phone name")
+    .select("fcm_token phone name user_id school")
     .lean();
 
   if (!guardians || guardians.length === 0) {
