@@ -4,6 +4,9 @@ const express = require("express");
 const {
   getSuperAdminDashboard,
   getSchoolSetupStatus,
+  getSchoolTeachers,
+  getSchoolGroups,
+  getSchoolTeacherSubjects,
 } = require("../controllers/dashboard.controller");
 const { isAuthenticated } = require("../middleware/jwt.middleware");
 const { authorize } = require("../middleware/authorize.middleware");
@@ -19,5 +22,14 @@ router.get("/super-admin", getSuperAdminDashboard);
 
 // GET /api/dashboard/super-admin/schools/:schoolId/setup-status — wizard de configuración
 router.get("/super-admin/schools/:schoolId/setup-status", getSchoolSetupStatus);
+
+// GET /api/dashboard/super-admin/schools/:schoolId/teachers — maestros de la escuela
+router.get("/super-admin/schools/:schoolId/teachers", getSchoolTeachers);
+
+// GET /api/dashboard/super-admin/schools/:schoolId/groups — grupos de la escuela
+router.get("/super-admin/schools/:schoolId/groups", getSchoolGroups);
+
+// GET /api/dashboard/super-admin/schools/:schoolId/teacher-subjects — asignaciones
+router.get("/super-admin/schools/:schoolId/teacher-subjects", getSchoolTeacherSubjects);
 
 module.exports = router;

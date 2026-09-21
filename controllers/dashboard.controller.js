@@ -10,6 +10,7 @@ const SchoolCalendar = require("../models/SchoolCalendar.model");
 const Subject = require("../models/Subject.model");
 const Group = require("../models/Group.model");
 const ClassSchedule = require("../models/ClassSchedule.model");
+const TeacherSubject = require("../models/TeacherSubject.model");
 
 // GET /api/dashboard/super-admin
 // Devuelve stats agregados y lista de escuelas con datos resumen.
@@ -254,7 +255,113 @@ const getSchoolSetupStatus = async (req, res, next) => {
   }
 };
 
+// GET /api/dashboard/super-admin/schools/:schoolId/teachers
+// Lista los maestros (User con role=teacher) de la escuela. Auth: super_admin.
+// Opcionalmente se puede filtrar por yearId para incluir counts de
+// TeacherSubject (asignaciones) y ClassSchedule (horas asignadas).
+const getSchoolTeachers = async (req, res, next) => {
+  try {
+    const { schoolId } = req.params;
+
+    if (!mongoose.Types.ObjectId.isValid(schoolId)) {
+      return res.status(400).json({ message: "Invalid schoolId." });
+    }
+
+    const school = await School.findById(schoolId).select("_id").lean();
+    if (!school) {
+      return res.status(404).json({ message: "School not found." });
+    }
+
+    // Listado base: todos los users con role=teacher en esta escuela.
+    const teachers = await User.find({
+      school: schoolId,
+      role: "teacher",
+    })
+      .select("_id name last_name email phoneNumber isActive")
+      .sort({ last_name: 1, name: 1 })
+      .lean();
+
+    res.status(200).json({
+      items: teachers,
+      total: teachers.length,
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+// GET /api/dashboard/super-admin/schools/:schoolId/groups
+// Lista los grupos de la escuela, opcionalmente filtrados por yearId.
+// Auth: super_admin.
+const getSchoolGroups = async (req, res, next) => {
+  try {
+    const { schoolId } = req.params;
+
+    if (!mongoose.Types.ObjectId.isValid(schoolId)) {
+      return res.status(400).json({ message: "Invalid schoolId." });
+    }
+
+    const filter = { school: schoolId };
+    if (
+      req.query.yearId &&
+      mongoose.Types.ObjectId.isValid(req.query.yearId)
+    ) {
+      filter.school_year_id = req.query.yearId;
+    }
+
+    const groups = await Group.find(filter)
+      .select("_id grade section type shift school_year_id head_teacher_id")
+      .sort({ grade: 1, section: 1 })
+      .lean();
+
+    res.status(200).json({
+      items: groups,
+      total: groups.length,
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+// GET /api/dashboard/super-admin/schools/:schoolId/teacher-subjects
+// Lista las asignaciones maestro-materia-grupo de la escuela (filtrable
+// por yearId). Auth: super_admin.
+const getSchoolTeacherSubjects = async (req, res, next) => {
+  try {
+    const { schoolId } = req.params;
+
+    if (!mongoose.Types.ObjectId.isValid(schoolId)) {
+      return res.status(400).json({ message: "Invalid schoolId." });
+    }
+
+    const filter = { school: schoolId };
+    if (
+      req.query.yearId &&
+      mongoose.Types.ObjectId.isValid(req.query.yearId)
+    ) {
+      filter.school_year_id = req.query.yearId;
+    }
+
+    const assignments = await TeacherSubject.find(filter)
+      .populate("teacher_id", "_id name last_name phoneNumber")
+      .populate("subject_id", "_id code name color")
+      .populate("group_id", "_id grade section")
+      .sort({ "teacher_id.last_name": 1, "subject_id.code": 1 })
+      .lean();
+
+    res.status(200).json({
+      items: assignments,
+      total: assignments.length,
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
 module.exports = {
   getSuperAdminDashboard,
   getSchoolSetupStatus,
+  getSchoolTeachers,
+  getSchoolGroups,
+  getSchoolTeacherSubjects,
 };
