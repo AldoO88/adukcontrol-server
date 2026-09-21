@@ -133,12 +133,32 @@ const userSchema = new Schema(
       },
       default: "BASE",
     },
-    // Teacher's academic preparation (e.g., Licenciatura, Maestría, Doctorado).
-    // Array of strings — a teacher may hold multiple degrees.
-    academicPreparation: {
-      type: [String],
-      default: [],
-    },
+    // Teacher's academic preparation — structured records.
+    // Each entry holds the degree type, career name, institution, and status.
+    academicPreparation: [
+      {
+        type: {
+          type: String,
+          enum: ["Licenciatura", "Especialidad", "Maestría", "Doctorado", "Posdoctorado"],
+          required: [true, "Degree type is required."],
+        },
+        careerName: {
+          type: String,
+          required: [true, "Career name is required."],
+          trim: true,
+        },
+        institution: {
+          type: String,
+          required: [true, "Institution is required."],
+          trim: true,
+        },
+        status: {
+          type: String,
+          enum: ["pasante", "titulado"],
+          required: [true, "Status is required."],
+        },
+      },
+    ],
     // Firebase Cloud Messaging token for push notifications.
     // Used by staff mobile app to receive notifications (e.g., when a
     // guardian confirms or requests reschedule of a citation).
