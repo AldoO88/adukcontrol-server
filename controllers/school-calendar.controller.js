@@ -2,6 +2,7 @@
 // CRUD de días festivos, vacaciones, suspensiones y días no lectivos.
 const mongoose = require("mongoose");
 const SchoolCalendar = require("../models/SchoolCalendar.model");
+const SchoolYear = require("../models/SchoolYear.model");
 
 const tenantFilter = (req) =>
   req.payload.role === "super_admin" ? {} : { school: req.payload.schoolId };
@@ -184,9 +185,117 @@ const deleteSchoolCalendarController = async (req, res, next) => {
   }
 };
 
+// POST /api/school-calendar/weekends
+// Marca todas las ocurrencias de los weekdays solicitados (0=Dom..6=Sáb)
+// dentro del rango startDate..endDate del ciclo como "non_lectivo".
+//
+// Body: { school_year_id, weekdays: [0..6] }
+//
+// Devuelve { total, created, skipped, days_of_week, sample_dates }.
+// NO sobrescribe entries existentes con type distinto (los skippea como
+// "skipped" en el resultado). Para borrar un día, hay que hacerlo
+// manualmente desde la UI del calendar (decisión de scope).
+const bulkMarkWeekends = async (req, res, next) => {
+  try {
+    const { school_year_id, weekdays } = req.body || {};
+
+    if (
+      !school_year_id ||
+      !mongoose.Types.ObjectId.isValid(school_year_id)
+    ) {
+      return res
+        .status(400)
+        .json({ message: "Valid school_year_id is required." });
+    }
+    if (!Array.isArray(weekdays) || weekdays.length === 0) {
+      return res
+        .status(400)
+        .json({ message: "weekdays must be a non-empty array." });
+    }
+    for (const d of weekdays) {
+      if (!Number.isInteger(d) || d < 0 || d > 6) {
+        return res
+          .status(400)
+          .json({ message: `Invalid weekday: ${d}. Must be 0-6.` });
+      }
+    }
+
+    // Buscar el ciclo para obtener el rango de fechas
+    const year = await SchoolYear.findById(school_year_id).lean();
+    if (!year) {
+      return res.status(404).json({ message: "School year not found." });
+    }
+
+    // Multi-tenant check
+    const isSuperAdmin = req.payload.role === "super_admin";
+    if (!isSuperAdmin) {
+      if (String(year.school) !== String(req.payload.schoolId)) {
+        return res.status(403).json({ message: "School year not in your tenant." });
+      }
+    }
+
+    const start = new Date(year.startDate);
+    start.setUTCHours(0, 0, 0, 0);
+    const end = new Date(year.endDate);
+    end.setUTCHours(0, 0, 0, 0);
+
+    if (start > end) {
+      return res
+        .status(400)
+        .json({ message: "School year startDate is after endDate." });
+    }
+
+    // Generar todas las ocurrencias
+    const dates = [];
+    for (let d = new Date(start); d <= end; d.setUTCDate(d.getUTCDate() + 1)) {
+      if (weekdays.includes(d.getUTCDay())) {
+        dates.push(new Date(d));
+      }
+    }
+
+    // bulkWrite con ordered:false para no fallar en duplicados
+    const schoolId = isSuperAdmin ? year.school : req.payload.schoolId;
+    const ops = dates.map((d) => ({
+      insertOne: {
+        document: {
+          school: schoolId,
+          school_year_id: school_year_id,
+          date: d,
+          type: "non_lectivo",
+          is_active: true,
+        },
+      },
+    }));
+
+    let inserted = 0;
+    let skipped = 0;
+    if (ops.length > 0) {
+      const result = await SchoolCalendar.bulkWrite(ops, {
+        ordered: false,
+      });
+      inserted = result.insertedCount || 0;
+      // writeErrors indica cuántos docs fallaron por duplicado u
+      // otro error de validación (e.g. unique key en school+year+date).
+      const writeErrors = result.writeErrors || [];
+      skipped = writeErrors.length;
+    }
+
+    res.status(200).json({
+      total: dates.length,
+      created: inserted,
+      skipped,
+      days_of_week: weekdays,
+      sample_dates: dates.slice(0, 5),
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
 module.exports = {
   getSchoolCalendarController,
   createSchoolCalendarController,
   updateSchoolCalendarController,
   deleteSchoolCalendarController,
+  bulkMarkWeekends,
 };

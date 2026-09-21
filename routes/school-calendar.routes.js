@@ -1,11 +1,13 @@
 // Router de Calendario Escolar (SchoolCalendar)
-// Endpoints bajo /api/school-calendar.
+// Endpoints bajo /api/school-calendar. Todos requieren JWT.
+// Escritura: admin/registrar/super_admin. Lectura: cualquier rol staff.
 const express = require("express");
 const {
   getSchoolCalendarController,
   createSchoolCalendarController,
   updateSchoolCalendarController,
   deleteSchoolCalendarController,
+  bulkMarkWeekends,
 } = require("../controllers/school-calendar.controller");
 const { isAuthenticated } = require("../middleware/jwt.middleware");
 const { authorize } = require("../middleware/authorize.middleware");
@@ -13,40 +15,29 @@ const { authorize } = require("../middleware/authorize.middleware");
 const { Router } = express;
 const router = Router();
 
-// GET /api/school-calendar
-// Lista registros del calendario. Auth: JWT + staff.
-router.get(
-  "/",
-  isAuthenticated,
-  authorize("admin", "principal", "registrar", "teacher", "super_admin"),
-  getSchoolCalendarController
-);
+const readRoles = [
+  "admin",
+  "principal",
+  "registrar",
+  "teacher",
+  "super_admin",
+];
+const writeRoles = ["admin", "registrar", "super_admin"];
 
-// POST /api/school-calendar
-// Crea un registro. Auth: JWT + admin/registrar/super_admin.
-router.post(
-  "/",
-  isAuthenticated,
-  authorize("admin", "registrar", "super_admin"),
-  createSchoolCalendarController
-);
+// GET /api/school-calendar — listar registros
+router.get("/", isAuthenticated, authorize(...readRoles), getSchoolCalendarController);
 
-// PUT /api/school-calendar/:entryId
-// Actualiza un registro. Auth: JWT + admin/registrar/super_admin.
-router.put(
-  "/:entryId",
-  isAuthenticated,
-  authorize("admin", "registrar", "super_admin"),
-  updateSchoolCalendarController
-);
+// POST /api/school-calendar — crear un registro
+router.post("/", isAuthenticated, authorize(...writeRoles), createSchoolCalendarController);
 
-// DELETE /api/school-calendar/:entryId
-// Elimina (soft delete) un registro. Auth: JWT + admin/registrar/super_admin.
-router.delete(
-  "/:entryId",
-  isAuthenticated,
-  authorize("admin", "registrar", "super_admin"),
-  deleteSchoolCalendarController
-);
+// POST /api/school-calendar/weekends — bulk-markear días no lectivos
+// Body: { school_year_id, weekdays: [0..6] }
+router.post("/weekends", isAuthenticated, authorize(...writeRoles), bulkMarkWeekends);
+
+// PUT /api/school-calendar/:entryId — actualizar
+router.put("/:entryId", isAuthenticated, authorize(...writeRoles), updateSchoolCalendarController);
+
+// DELETE /api/school-calendar/:entryId — eliminar (soft)
+router.delete("/:entryId", isAuthenticated, authorize(...writeRoles), deleteSchoolCalendarController);
 
 module.exports = router;
