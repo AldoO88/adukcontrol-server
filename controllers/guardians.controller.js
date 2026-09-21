@@ -17,6 +17,7 @@ const ClassSchedule = require("../models/ClassSchedule.model");
 const SchoolShift = require("../models/SchoolShift.model");
 const Subject = require("../models/Subject.model");
 const cache = require("../services/cache.service");
+const notificationService = require("../services/notification.service");
 const {
   getConductConfig,
   clampScore,

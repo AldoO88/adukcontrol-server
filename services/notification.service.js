@@ -565,14 +565,17 @@ const sendAnnouncementNotification = async (announcement) => {
 
 // Envía un push a un solo staff user por su fcm_token (que ahora es
 // un Expo Push Token). También persiste en la campanita in-app.
+//
+// IMPORTANTE: la persistencia en campanita ocurre SIEMPRE que el user
+// exista (tenga o no token de push). Esto permite que el staff vea la
+// notificación cuando abra la app, aunque no haya abierto la app
+// cuando el tutor pidió la reagendación.
 const sendToStaffUser = async (user, payload) => {
-  if (!user || !user.fcm_token) {
-    return { dispatched: 0, reason: "no_fcm_token" };
+  if (!user) {
+    return { dispatched: 0, reason: "no_user" };
   }
 
-  const result = await sendToTokens([user.fcm_token], payload);
-
-  // Persistir en campanita in-app (best-effort).
+  // Persistir en campanita in-app (best-effort, incluso si no hay token).
   try {
     await notificationsService.persistNotification({
       recipient_user_id: user._id,
@@ -590,6 +593,13 @@ const sendToStaffUser = async (user, payload) => {
     );
   }
 
+  // Si no hay token, retornamos temprano (campanita ya quedó poblada).
+  if (!user.fcm_token) {
+    return { dispatched: 0, reason: "no_fcm_token", persisted: true };
+  }
+
+  const result = await sendToTokens([user.fcm_token], payload);
+
   // Invalidar si el token está stale.
   if (result.tickets && result.tickets[0]?.details?.error === "DeviceNotRegistered") {
     await User.updateOne(
@@ -604,6 +614,7 @@ const sendToStaffUser = async (user, payload) => {
   return {
     dispatched: result.successCount,
     failed: result.failureCount,
+    persisted: true,
   };
 };
 
@@ -614,7 +625,7 @@ const sendCitationConfirmedNotification = async (citation, guardianName) => {
     : "Alumno";
 
   const creator = await User.findById(citation.creator)
-    .select("fcm_token name last_name")
+    .select("fcm_token name last_name school role")
     .lean();
 
   if (!creator) {
@@ -659,7 +670,7 @@ const sendCitationRescheduleRequestNotification = async (
     : "Alumno";
 
   const creator = await User.findById(citation.creator)
-    .select("fcm_token name last_name")
+    .select("fcm_token name last_name school role")
     .lean();
 
   if (!creator) {
