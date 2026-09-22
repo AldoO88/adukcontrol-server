@@ -252,7 +252,6 @@ module.exports = {
   deleteSchoolYear,
   activateSchoolYear,
   deactivateSchoolYear,
-  cloneSchoolYear,
 };
 
 // POST /api/school-years/:schoolYearId/clone
