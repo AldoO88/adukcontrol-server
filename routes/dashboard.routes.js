@@ -11,6 +11,7 @@ const {
   getSchoolWorkshops,
   getPendingTasks,
   updateTeacher,
+  updateStaffUser,
 } = require("../controllers/dashboard.controller");
 const { createGroup, updateGroup, deleteGroup } = require("../controllers/groups.controller");
 const { isAuthenticated } = require("../middleware/jwt.middleware");
@@ -64,5 +65,8 @@ router.get("/super-admin/pending-tasks", getPendingTasks);
 
 // PUT /api/dashboard/super-admin/schools/:schoolId/teachers/:teacherId — actualizar maestro
 router.put("/super-admin/schools/:schoolId/teachers/:teacherId", updateTeacher);
+
+// PUT /api/dashboard/super-admin/schools/:schoolId/users/:userId — actualizar usuario staff
+router.put("/super-admin/schools/:schoolId/users/:userId", updateStaffUser);
 
 module.exports = router;

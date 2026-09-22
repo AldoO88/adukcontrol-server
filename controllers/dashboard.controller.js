@@ -587,6 +587,54 @@ const getSchoolWorkshops = async (req, res, next) => {
   }
 };
 
+// PUT /api/dashboard/super-admin/schools/:schoolId/users/:userId
+// Actualiza un usuario staff (cualquier rol excepto super_admin y tutor).
+const updateStaffUser = async (req, res, next) => {
+  try {
+    const { schoolId, userId } = req.params;
+
+    if (!mongoose.Types.ObjectId.isValid(schoolId) || !mongoose.Types.ObjectId.isValid(userId)) {
+      return res.status(400).json({ message: "Invalid schoolId or userId." });
+    }
+
+    const school = await School.findById(schoolId).select("_id").lean();
+    if (!school) {
+      return res.status(404).json({ message: "School not found." });
+    }
+
+    const user = await User.findOne({ _id: userId, school: schoolId });
+    if (!user) {
+      return res.status(404).json({ message: "User not found." });
+    }
+
+    if (user.role === "super_admin" || user.role === "tutor") {
+      return res.status(403).json({ message: "Cannot update this user type." });
+    }
+
+    const allowedFields = ["name", "last_name", "phoneNumber", "email", "sex", "role", "isActive", "academicPreparation"];
+    const updates = {};
+    for (const field of allowedFields) {
+      if (req.body[field] !== undefined) {
+        updates[field] = req.body[field];
+      }
+    }
+
+    if (Object.keys(updates).length === 0) {
+      return res.status(400).json({ message: "No valid fields to update." });
+    }
+
+    const updated = await User.findOneAndUpdate(
+      { _id: userId, school: schoolId },
+      { $set: updates },
+      { new: true, runValidators: true }
+    ).select("_id name last_name email phoneNumber role isActive sex academicPreparation");
+
+    res.status(200).json({ user: updated });
+  } catch (error) {
+    next(error);
+  }
+};
+
 module.exports = {
   getSuperAdminDashboard,
   getSchoolSetupStatus,
@@ -597,4 +645,5 @@ module.exports = {
   getSchoolWorkshops,
   getPendingTasks,
   updateTeacher,
+  updateStaffUser,
 };
