@@ -196,6 +196,54 @@ const activateSchoolYear = async (req, res, next) => {
   }
 };
 
+// POST /api/school-years/:schoolYearId/deactivate
+// Desactiva un ciclo escolar (lo marca como inactivo).
+const deactivateSchoolYear = async (req, res, next) => {
+  try {
+    const { schoolYearId } = req.params;
+
+    if (!mongoose.Types.ObjectId.isValid(schoolYearId)) {
+      return res
+        .status(404)
+        .json({ message: `No school year with id: ${schoolYearId}` });
+    }
+
+    const schoolYear = await SchoolYear.findOne({
+      _id: schoolYearId,
+      ...tenantFilter(req),
+    });
+
+    if (!schoolYear) {
+      return res
+        .status(404)
+        .json({ message: `No school year with id: ${schoolYearId}` });
+    }
+
+    if (!schoolYear.isActive) {
+      return res
+        .status(400)
+        .json({ message: "This school year is already inactive." });
+    }
+
+    schoolYear.isActive = false;
+    await schoolYear.save();
+
+    // Si era el ciclo vigente de la escuela, limpiar la referencia
+    const school = await mongoose.model("School").findById(schoolYear.school);
+    if (school && String(school.current_school_year_id) === String(schoolYear._id)) {
+      school.current_school_year_id = null;
+      await school.save();
+    }
+
+    res.status(200).json({
+      message: "School year deactivated successfully.",
+      schoolYear,
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
 module.exports = {
   getAllSchoolYears,
   createSchoolYear,
@@ -203,6 +251,8 @@ module.exports = {
   updateSchoolYear,
   deleteSchoolYear,
   activateSchoolYear,
+  deactivateSchoolYear,
+  cloneSchoolYear,
 };
 
 // POST /api/school-years/:schoolYearId/clone

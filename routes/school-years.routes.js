@@ -9,6 +9,7 @@ const {
   updateSchoolYear,
   deleteSchoolYear,
   activateSchoolYear,
+  deactivateSchoolYear,
   cloneSchoolYear,
 } = require("../controllers/school-years.controller");
 const { isAuthenticated } = require("../middleware/jwt.middleware");
@@ -28,7 +29,7 @@ const readRoles = [
   "social_worker",
   "super_admin",
 ];
-const writeRoles = ["admin", "registrar", "super_admin"];
+const writeRoles = ["admin", "principal", "registrar", "super_admin"];
 
 // GET /api/school-years — listar ciclos de la escuela
 router.get("/", authorize(...readRoles), getAllSchoolYears);
@@ -50,6 +51,13 @@ router.post(
   "/:schoolYearId/activate",
   authorize(...writeRoles),
   activateSchoolYear
+);
+
+// POST /api/school-years/:schoolYearId/deactivate — desactiva un ciclo
+router.post(
+  "/:schoolYearId/deactivate",
+  authorize(...writeRoles),
+  deactivateSchoolYear
 );
 
 // POST /api/school-years/:schoolYearId/clone — clona configuración del ciclo anterior
