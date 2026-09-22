@@ -31,7 +31,7 @@ router.get(
 );
 
 // POST /api/groups — crear un grupo
-router.post("/", authorize("admin", "registrar"), createGroup);
+router.post("/", authorize("admin", "principal", "registrar"), createGroup);
 
 // GET /api/groups/:groupId/students — DEBE ir antes que /:groupId
 router.get(
@@ -59,14 +59,14 @@ router.get(
 // PUT /api/groups/:groupId — actualizar un grupo
 router.put(
   "/:groupId",
-  authorize("admin", "registrar"),
+  authorize("admin", "principal", "registrar"),
   updateGroup
 );
 
 // DELETE /api/groups/:groupId — eliminar un grupo
 router.delete(
   "/:groupId",
-  authorize("admin", "registrar"),
+  authorize("admin", "principal", "registrar"),
   deleteGroup
 );
 
