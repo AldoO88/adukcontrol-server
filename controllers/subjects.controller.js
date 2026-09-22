@@ -47,7 +47,11 @@ const getSubjectById = async (req, res, next) => {
 // Crea una materia. Auth: admin/registrar.
 const createSubject = async (req, res, next) => {
   try {
-    const { code, name, grade, description } = req.body;
+    const {
+      code, name, grade, description,
+      educationalLevel, classificationType, macroCategory,
+      credits, isTutoria, color, icon,
+    } = req.body;
 
     if (!code || !name) {
       return res.status(400).json({ message: "code and name are required." });
@@ -64,6 +68,13 @@ const createSubject = async (req, res, next) => {
       name: name.trim(),
       grade: grade || null,
       description: description || null,
+      educationalLevel: educationalLevel || "BASIC",
+      classificationType: classificationType || "DISCIPLINE",
+      macroCategory: macroCategory || null,
+      credits: credits || 0,
+      isTutoria: isTutoria || false,
+      color: color || null,
+      icon: icon || null,
     });
     res.status(201).json(subject);
   } catch (error) {
