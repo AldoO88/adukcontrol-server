@@ -12,6 +12,7 @@ const {
   getPendingTasks,
   updateTeacher,
 } = require("../controllers/dashboard.controller");
+const { createGroup, updateGroup, deleteGroup } = require("../controllers/groups.controller");
 const { isAuthenticated } = require("../middleware/jwt.middleware");
 const { authorize } = require("../middleware/authorize.middleware");
 
@@ -32,6 +33,22 @@ router.get("/super-admin/schools/:schoolId/teachers", getSchoolTeachers);
 
 // GET /api/dashboard/super-admin/schools/:schoolId/groups — grupos de la escuela
 router.get("/super-admin/schools/:schoolId/groups", getSchoolGroups);
+
+// POST /api/dashboard/super-admin/schools/:schoolId/groups — crear grupo
+router.post("/super-admin/schools/:schoolId/groups", (req, res, next) => {
+  req.body.school = req.params.schoolId;
+  createGroup(req, res, next);
+});
+
+// PUT /api/dashboard/super-admin/schools/:schoolId/groups/:groupId — actualizar grupo
+router.put("/super-admin/schools/:schoolId/groups/:groupId", (req, res, next) => {
+  updateGroup(req, res, next);
+});
+
+// DELETE /api/dashboard/super-admin/schools/:schoolId/groups/:groupId — eliminar grupo
+router.delete("/super-admin/schools/:schoolId/groups/:groupId", (req, res, next) => {
+  deleteGroup(req, res, next);
+});
 
 // GET /api/dashboard/super-admin/schools/:schoolId/teacher-subjects — asignaciones
 router.get("/super-admin/schools/:schoolId/teacher-subjects", getSchoolTeacherSubjects);
