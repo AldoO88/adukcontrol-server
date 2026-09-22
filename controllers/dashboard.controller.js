@@ -504,7 +504,7 @@ const getSchoolUsers = async (req, res, next) => {
     }
 
     const users = await User.find({ school: schoolId })
-      .select("_id name last_name email phoneNumber role isActive sex")
+      .select("_id name last_name email phoneNumber role isActive sex academicPreparation")
       .sort({ role: 1, name: 1 })
       .lean();
 
