@@ -24,7 +24,7 @@ const getAllSchoolYears = async (req, res, next) => {
 const createSchoolYear = async (req, res, next) => {
   try {
     const isSuperAdmin = req.payload.role === "super_admin";
-    const { name, startDate, endDate } = req.body;
+    const { name, startDate, endDate, workingDays } = req.body;
 
     if (!name || !startDate || !endDate) {
       return res
@@ -39,12 +39,12 @@ const createSchoolYear = async (req, res, next) => {
         .json({ message: "school is required in body for super_admin." });
     }
 
-    const newSchoolYear = await SchoolYear.create({
-      school,
-      name,
-      startDate,
-      endDate,
-    });
+    const doc = { school, name, startDate, endDate };
+    if (Array.isArray(workingDays) && workingDays.length > 0) {
+      doc.workingDays = workingDays;
+    }
+
+    const newSchoolYear = await SchoolYear.create(doc);
     res.status(201).json(newSchoolYear);
   } catch (error) {
     if (error.code === 11000) {

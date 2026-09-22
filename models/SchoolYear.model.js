@@ -29,6 +29,16 @@ const schoolYearSchema = new Schema(
       type: Date,
       required: [true, "endDate is required."],
     },
+    // Días de la semana que son lectivos (0=Dom, 1=Lun, ..., 6=Sáb).
+    // Default: Lunes a Viernes [1,2,3,4,5].
+    workingDays: {
+      type: [Number],
+      default: [1, 2, 3, 4, 5],
+      validate: {
+        validator: (v) => v.every((d) => d >= 0 && d <= 6),
+        message: "workingDays values must be between 0 (Sunday) and 6 (Saturday).",
+      },
+    },
     // Solo debe haber UN ciclo activo por escuela a la vez. La activación
     // se gestiona en el controller (activateSchoolYear), que desactiva los
     // demás ciclos de la misma escuela y sincroniza School.current_school_year_id.
