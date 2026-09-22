@@ -118,6 +118,22 @@ const subjectSchema = new Schema(
       trim: true,
       maxlength: 50,
     },
+    // Workshop offerings — only used when classificationType === "WORKSHOP".
+    // Each entry represents a specific workshop the school offers
+    // (e.g., "ELECTRONICA", "INFORMATICA").
+    // When a school year is created/cloned, these are used to generate
+    // Group(type: "taller") documents.
+    workshops: [
+      {
+        name: {
+          type: String,
+          required: [true, "Workshop name is required."],
+          trim: true,
+          uppercase: true,
+          maxlength: 80,
+        },
+      },
+    ],
   },
   {
     timestamps: true,

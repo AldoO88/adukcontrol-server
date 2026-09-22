@@ -514,6 +514,79 @@ const getSchoolUsers = async (req, res, next) => {
   }
 };
 
+// GET /api/dashboard/super-admin/schools/:schoolId/workshops
+// Lista los talleres de la escuela: las ofertas de materias tipo WORKSHOP
+// y los Groups(type:"taller") del ciclo activo (o filtrado por ?yearId=).
+const getSchoolWorkshops = async (req, res, next) => {
+  try {
+    const { schoolId } = req.params;
+
+    if (!mongoose.Types.ObjectId.isValid(schoolId)) {
+      return res.status(400).json({ message: "Invalid schoolId." });
+    }
+
+    const school = await School.findById(schoolId).select("_id").lean();
+    if (!school) {
+      return res.status(404).json({ message: "School not found." });
+    }
+
+    // 1) Ofertas de talleres definidas en las materias
+    const workshopSubjects = await Subject.find({
+      school: schoolId,
+      classificationType: "WORKSHOP",
+      "workshops.0": { $exists: true },
+    })
+      .select("name code color icon workshops")
+      .lean();
+
+    // 2) Groups(type:"taller") del ciclo (activo por defecto, o filtrado por yearId)
+    let yearFilter = {};
+    if (req.query.yearId) {
+      yearFilter = { school_year_id: req.query.yearId };
+    } else {
+      const activeYear = await SchoolYear.findOne({ school: schoolId, isActive: true })
+        .select("_id")
+        .lean();
+      if (activeYear) {
+        yearFilter = { school_year_id: activeYear._id };
+      }
+    }
+
+    const tallerGroups = await Group.find({
+      school: schoolId,
+      type: "taller",
+      ...yearFilter,
+    })
+      .select("grade section shift head_teacher_id school_year_id")
+      .populate("head_teacher_id", "name last_name")
+      .lean();
+
+    // 3) Conteo de alumnos por taller
+    const Student = require("../models/Student.model");
+    const tallerIds = tallerGroups.map((g) => g._id);
+    const studentCounts = await Student.aggregate([
+      { $match: { workshop_group_id: { $in: tallerIds }, school: mongoose.Types.ObjectId(schoolId) } },
+      { $group: { _id: "$workshop_group_id", count: { $sum: 1 } } },
+    ]);
+    const countMap = {};
+    for (const sc of studentCounts) {
+      countMap[sc._id.toString()] = sc.count;
+    }
+
+    const groupsWithCount = tallerGroups.map((g) => ({
+      ...g,
+      studentCount: countMap[g._id.toString()] || 0,
+    }));
+
+    res.status(200).json({
+      offerings: workshopSubjects,
+      groups: groupsWithCount,
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
 module.exports = {
   getSuperAdminDashboard,
   getSchoolSetupStatus,
@@ -521,6 +594,7 @@ module.exports = {
   getSchoolGroups,
   getSchoolTeacherSubjects,
   getSchoolUsers,
+  getSchoolWorkshops,
   getPendingTasks,
   updateTeacher,
 };

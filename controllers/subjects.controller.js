@@ -50,7 +50,7 @@ const createSubject = async (req, res, next) => {
     const {
       code, name, grade, description,
       educationalLevel, classificationType, macroCategory,
-      credits, isTutoria, color, icon,
+      credits, isTutoria, color, icon, workshops,
     } = req.body;
 
     if (!code || !name) {
@@ -75,6 +75,7 @@ const createSubject = async (req, res, next) => {
       isTutoria: isTutoria || false,
       color: color || null,
       icon: icon || null,
+      workshops: classificationType === "WORKSHOP" && workshops ? workshops : [],
     });
     res.status(201).json(subject);
   } catch (error) {

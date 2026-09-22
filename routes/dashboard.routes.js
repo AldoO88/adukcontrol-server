@@ -8,6 +8,7 @@ const {
   getSchoolGroups,
   getSchoolTeacherSubjects,
   getSchoolUsers,
+  getSchoolWorkshops,
   getPendingTasks,
   updateTeacher,
 } = require("../controllers/dashboard.controller");
@@ -37,6 +38,9 @@ router.get("/super-admin/schools/:schoolId/teacher-subjects", getSchoolTeacherSu
 
 // GET /api/dashboard/super-admin/schools/:schoolId/users — todos los usuarios de la escuela
 router.get("/super-admin/schools/:schoolId/users", getSchoolUsers);
+
+// GET /api/dashboard/super-admin/schools/:schoolId/workshops — talleres de la escuela
+router.get("/super-admin/schools/:schoolId/workshops", getSchoolWorkshops);
 
 // GET /api/dashboard/super-admin/pending-tasks — lista de tareas pendientes
 router.get("/super-admin/pending-tasks", getPendingTasks);
