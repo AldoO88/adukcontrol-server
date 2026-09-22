@@ -26,6 +26,7 @@ const socialWorkerRouter = require("./social-worker.routes"); // /api/social-wor
 const directorRouter = require("./director.routes"); // /api/director (funcionalidades del director)
 const notificationsRouter = require("./notifications.routes"); // /api/me/notifications (campanita in-app)
 const schoolShiftsRouter = require("./school-shifts.routes"); // /api/school-shifts (turnos / campanas)
+const shiftTemplatesRouter = require("./shift-templates.routes"); // /api/shift-templates (plantillas de turno)
 const classSchedulesRouter = require("./class-schedules.routes"); // /api/class-schedules (horarios de clase)
 const gradingPeriodsRouter = require("./grading-periods.routes"); // /api/grading-periods (períodos de evaluación)
 const studentsCredentialsRouter = require("./students-credentials.routes"); // /api/students/credentials (credenciales PDF)
@@ -58,6 +59,7 @@ router.use("/social-worker", socialWorkerRouter);
 router.use("/director", directorRouter);
 router.use("/", notificationsRouter); // /api/me/notifications/...
 router.use("/school-shifts", schoolShiftsRouter);
+router.use("/shift-templates", shiftTemplatesRouter);
 router.use("/class-schedules", classSchedulesRouter);
 router.use("/grading-periods", gradingPeriodsRouter);
 router.use("/students/credentials", studentsCredentialsRouter);
