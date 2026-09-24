@@ -73,7 +73,8 @@ const getSchoolCalendarController = async (req, res, next) => {
 const createSchoolCalendarController = async (req, res, next) => {
   try {
     const { school_year_id, date, type, name } = req.body;
-    const schoolId = req.payload.schoolId;
+    const isSuperAdmin = req.payload.role === "super_admin";
+    const schoolId = isSuperAdmin ? req.body.school : req.payload.schoolId;
 
     if (!schoolId) {
       return res
