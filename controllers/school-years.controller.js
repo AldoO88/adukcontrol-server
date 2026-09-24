@@ -4,6 +4,8 @@
 const mongoose = require("mongoose");
 const SchoolYear = require("../models/SchoolYear.model");
 const School = require("../models/School.model");
+const GroupTemplate = require("../models/GroupTemplate.model");
+const Group = require("../models/Group.model");
 
 const tenantFilter = (req) =>
   req.payload.role === "super_admin" ? {} : { school: req.payload.schoolId };
@@ -45,7 +47,24 @@ const createSchoolYear = async (req, res, next) => {
     }
 
     const newSchoolYear = await SchoolYear.create(doc);
-    res.status(201).json(newSchoolYear);
+
+    // Clonar GroupTemplates al nuevo ciclo como Group
+    const templates = await GroupTemplate.find({ school });
+    let clonedGroups = 0;
+    if (templates.length > 0) {
+      const groupInserts = templates.map((t) => ({
+        school,
+        school_year_id: newSchoolYear._id,
+        grade: t.grade,
+        section: t.section,
+        type: t.type || "regular",
+        shift: t.shift || "matutino",
+      }));
+      await Group.insertMany(groupInserts);
+      clonedGroups = groupInserts.length;
+    }
+
+    res.status(201).json({ ...newSchoolYear.toObject(), clonedGroups });
   } catch (error) {
     if (error.code === 11000) {
       return res
