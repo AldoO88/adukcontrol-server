@@ -248,8 +248,8 @@ router.post(
   openGrades
 );
 
-router.get("/", authorize("admin", "principal", "registrar", "teacher", "prefect"), getAllTeacherSubjects);
-router.post("/", authorize("admin", "registrar"), createTeacherSubject);
-router.delete("/:id", authorize("admin", "registrar"), deleteTeacherSubject);
+router.get("/", authorize("admin", "principal", "registrar", "teacher", "prefect", "super_admin"), getAllTeacherSubjects);
+router.post("/", authorize("admin", "registrar", "super_admin"), createTeacherSubject);
+router.delete("/:id", authorize("admin", "registrar", "super_admin"), deleteTeacherSubject);
 
 module.exports = router;
