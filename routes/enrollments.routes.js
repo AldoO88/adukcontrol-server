@@ -25,6 +25,7 @@ const readRoles = [
   "teacher",
   "prefect",
   "social_worker",
+  "super_admin",
 ];
 const writeRoles = ["admin", "registrar", "super_admin"];
 
@@ -32,7 +33,7 @@ const writeRoles = ["admin", "registrar", "super_admin"];
 router.get("/", authorize(...readRoles), getAllEnrollments);
 
 // POST /api/enrollments — crear una inscripción
-router.post("/", authorize("admin", "registrar"), createEnrollment);
+router.post("/", authorize("admin", "registrar", "super_admin"), createEnrollment);
 
 // POST /api/enrollments/import — carga masiva desde Excel
 router.post(
@@ -46,9 +47,9 @@ router.post(
 router.get("/:enrollmentId", authorize(...readRoles), getEnrollmentById);
 
 // PUT /api/enrollments/:enrollmentId — actualizar
-router.put("/:enrollmentId", authorize("admin", "registrar"), updateEnrollment);
+router.put("/:enrollmentId", authorize("admin", "registrar", "super_admin"), updateEnrollment);
 
 // DELETE /api/enrollments/:enrollmentId — eliminar
-router.delete("/:enrollmentId", authorize("admin", "registrar"), deleteEnrollment);
+router.delete("/:enrollmentId", authorize("admin", "registrar", "super_admin"), deleteEnrollment);
 
 module.exports = router;
