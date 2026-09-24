@@ -37,28 +37,28 @@ router.post(
 // GET /api/students — listar con paginación y filtros
 router.get(
   "/",
-  authorize("admin", "principal", "registrar", "teacher", "prefect", "social_worker"),
+  authorize("admin", "principal", "registrar", "teacher", "prefect", "social_worker", "super_admin"),
   getAllStudents
 );
 
 // GET /api/students/:studentId — detalle de un estudiante
 router.get(
   "/:studentId",
-  authorize("admin", "principal", "registrar", "teacher", "prefect", "social_worker"),
+  authorize("admin", "principal", "registrar", "teacher", "prefect", "social_worker", "super_admin"),
   getStudentById
 );
 
 // PUT /api/students/:studentId — actualizar un estudiante
 router.put(
   "/:studentId",
-  authorize("admin", "registrar"),
+  authorize("admin", "registrar", "super_admin"),
   updateStudent
 );
 
 // DELETE /api/students/:studentId — eliminar un estudiante
 router.delete(
   "/:studentId",
-  authorize("admin", "registrar"),
+  authorize("admin", "registrar", "super_admin"),
   deleteStudent
 );
 

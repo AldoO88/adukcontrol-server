@@ -59,14 +59,14 @@ router.get(
 // PUT /api/groups/:groupId — actualizar un grupo
 router.put(
   "/:groupId",
-  authorize("admin", "principal", "registrar"),
+  authorize("admin", "principal", "registrar", "super_admin"),
   updateGroup
 );
 
 // DELETE /api/groups/:groupId — eliminar un grupo
 router.delete(
   "/:groupId",
-  authorize("admin", "principal", "registrar"),
+  authorize("admin", "principal", "registrar", "super_admin"),
   deleteGroup
 );
 
