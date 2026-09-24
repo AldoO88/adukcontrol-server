@@ -278,7 +278,6 @@ module.exports = {
 // Copia: SchoolShifts, TeacherSubjects, Groups, GradingPeriods, ClassSchedules.
 const SchoolShift = require("../models/SchoolShift.model");
 const TeacherSubject = require("../models/TeacherSubject.model");
-const Group = require("../models/Group.model");
 const GradingPeriod = require("../models/GradingPeriod.model");
 const ClassSchedule = require("../models/ClassSchedule.model");
 
