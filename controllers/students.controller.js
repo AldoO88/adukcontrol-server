@@ -1075,6 +1075,124 @@ const updateStudentHealth = async (req, res, next) => {
   }
 };
 
+// POST /api/students/import
+// Import students from Excel/CSV. Creates students + enrollments.
+const XLSX = require("xlsx");
+const Guardian = require("../models/Guardian.model");
+
+const importStudentsFromSpreadsheet = async (req, res, next) => {
+  try {
+    if (!req.file || !req.file.buffer) {
+      return res.status(400).json({ message: "Excel file is required." });
+    }
+
+    const { school_year_id, school: schoolBody } = req.body || {};
+    const isSuperAdmin = req.payload.role === "super_admin";
+    const school = isSuperAdmin ? schoolBody : req.payload.schoolId;
+
+    if (!school) {
+      return res.status(400).json({ message: "school is required (super_admin must pass it in body)." });
+    }
+
+    if (!school_year_id || !mongoose.Types.ObjectId.isValid(school_year_id)) {
+      return res.status(400).json({ message: "Valid school_year_id is required." });
+    }
+
+    let workbook;
+    try {
+      workbook = XLSX.read(req.file.buffer, { type: "buffer" });
+    } catch (err) {
+      return res.status(400).json({ message: `Invalid spreadsheet: ${err.message}` });
+    }
+
+    const sheetName = workbook.SheetNames[0];
+    if (!sheetName) return res.status(400).json({ message: "Spreadsheet has no sheets." });
+
+    const rows = XLSX.utils.sheet_to_json(workbook.Sheets[sheetName], { defval: "" });
+    if (rows.length === 0) return res.status(400).json({ message: "Spreadsheet has no data rows." });
+    if (rows.length > 500) return res.status(400).json({ message: "Maximum 500 rows per import." });
+
+    const normalizeKey = (s) => String(s || "").toLowerCase().trim().replace(/[^a-z0-9]/g, "");
+    const rowKeyMap = (row) => {
+      const out = {};
+      for (const k of Object.keys(row)) out[normalizeKey(k)] = row[k];
+      return out;
+    };
+
+    const groups = await Group.find({ school, school_year_id }).select("_id grade section").lean();
+    const groupByLabel = new Map();
+    for (const g of groups) groupByLabel.set(`${g.grade}${g.section.toUpperCase()}`, g._id.toString());
+
+    const results = [];
+    const toCreate = [];
+
+    for (let i = 0; i < rows.length; i++) {
+      const keys = rowKeyMap(rows[i]);
+      const curp = String(keys.curp || "").trim().toUpperCase();
+      const firstName = String(keys.firstname || keys.first_name || "").trim();
+      const lastName = String(keys.lastname || keys.last_name || "").trim();
+      const group = String(keys.group || "").trim().toUpperCase();
+
+      if (!curp || curp.length !== 18) { results.push({ index: i, status: "error", errors: ["CURP required (18 chars)"] }); continue; }
+      if (!firstName) { results.push({ index: i, status: "error", curp, errors: ["first_name required"] }); continue; }
+
+      const groupId = group ? groupByLabel.get(group) : null;
+      if (group && !groupId) { results.push({ index: i, status: "error", curp, group, errors: [`Group "${group}" not found`] }); continue; }
+
+      toCreate.push({
+        index: i, curp, firstName, lastName, groupId,
+        sex: String(keys.sex || "").trim() || null,
+        phone: String(keys.phone || "").trim() || null,
+        address: String(keys.address || "").trim() || null,
+        dateOfBirth: String(keys.dateofbirth || keys.date_of_birth || "").trim() || null,
+        bloodType: String(keys.bloodtype || keys.blood_type || "").trim() || null,
+        guardianName: String(keys.guardianname || keys.guardian_name || "").trim() || null,
+        guardianPhone: String(keys.guardianphone || keys.guardian_phone || "").trim() || null,
+        guardianRelationship: String(keys.guardianrelationship || keys.guardian_relationship || "").trim() || "tutor legal",
+      });
+    }
+
+    const created = [];
+    for (const item of toCreate) {
+      try {
+        const existing = await Student.findOne({ school, curp: item.curp });
+        if (existing) { results.push({ index: item.index, status: "error", curp: item.curp, errors: ["CURP already exists"] }); continue; }
+
+        const student = await Student.create({
+          school, curp: item.curp, first_name: item.firstName, last_name: item.lastName,
+          sex: item.sex || undefined, phone: item.phone || undefined, address: item.address || undefined,
+          date_of_birth: item.dateOfBirth || undefined, blood_type: item.bloodType || undefined,
+        });
+
+        if (item.guardianName && item.guardianPhone) {
+          try {
+            const guardian = await Guardian.create({
+              school, name: item.guardianName, phone: item.guardianPhone,
+              relationship: item.guardianRelationship, students: [student._id],
+            });
+            student.guardians = [guardian._id];
+            await student.save();
+          } catch { /* guardian failed but student ok */ }
+        }
+
+        const enrollment = await Enrollment.create({
+          school, school_year_id, student_id: student._id,
+          group_id: item.groupId || null, cycle_status: "enrolled",
+        });
+
+        created.push({ index: item.index, status: "ok", curp: item.curp, studentId: student._id, enrollmentId: enrollment._id });
+      } catch (err) {
+        results.push({ index: item.index, status: "error", curp: item.curp, errors: [err.code === 11000 ? "Duplicate" : err.message] });
+      }
+    }
+
+    res.status(200).json({
+      total: rows.length, succeeded: created.length, failed: results.length,
+      results: [...results, ...created].sort((a, b) => a.index - b.index),
+    });
+  } catch (error) { next(error); }
+};
+
 module.exports = {
   createStudent,
   getAllStudents,
@@ -1090,4 +1208,5 @@ module.exports = {
   promoteStudentsBulk,
   getStudentHealth,
   updateStudentHealth,
+  importStudentsFromSpreadsheet,
 };

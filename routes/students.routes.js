@@ -17,10 +17,12 @@ const {
   promoteStudentsBulk,
   getStudentHealth,
   updateStudentHealth,
+  importStudentsFromSpreadsheet,
 } = require("../controllers/students.controller");
 const { isAuthenticated } = require("../middleware/jwt.middleware");
 const { authorize } = require("../middleware/authorize.middleware");
 const { uploadSingle } = require("../middleware/upload.middleware");
+const { uploadSpreadsheetSingle } = require("../middleware/spreadsheet-upload.middleware");
 
 const { Router } = express;
 const router = Router();
@@ -106,6 +108,14 @@ router.get(
   "/:studentId/academic-history",
   authorize("admin", "principal", "registrar", "teacher", "prefect", "social_worker"),
   getStudentAcademicHistory
+);
+
+// POST /api/students/import — import from Excel — DEBE ir antes que /:studentId
+router.post(
+  "/import",
+  authorize("admin", "registrar", "super_admin"),
+  uploadSpreadsheetSingle("file"),
+  importStudentsFromSpreadsheet
 );
 
 // POST /api/students/promote-bulk — DEBE ir antes que /:studentId
