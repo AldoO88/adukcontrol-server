@@ -20,7 +20,8 @@ const enrollmentSchema = new Schema(
     group_id: {
       type: Schema.Types.ObjectId,
       ref: "Group",
-      required: [true, "Group reference is required."],
+      required: false,
+      default: null,
     },
     school_year_id: {
       type: Schema.Types.ObjectId,

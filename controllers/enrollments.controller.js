@@ -48,8 +48,12 @@ const getAllEnrollments = async (req, res, next) => {
     if (cycle_status) filter.cycle_status = cycle_status;
 
     const enrollments = await Enrollment.find(filter)
-      .populate("student_id", "controlNumber first_name last_name")
-      .populate("group_id", "grade section school_year_id")
+      .populate({
+        path: "student_id",
+        select: "controlNumber first_name last_name sex phone workshop_group_id status",
+        populate: { path: "workshop_group_id", select: "grade section type" },
+      })
+      .populate("group_id", "grade section school_year_id shift type")
       .populate("school_year_id", "name startDate endDate isActive")
       .sort({ createdAt: -1 });
 
@@ -107,8 +111,12 @@ const getEnrollmentById = async (req, res, next) => {
       _id: enrollmentId,
       ...tenantFilter(req),
     })
-      .populate("student_id", "controlNumber first_name last_name")
-      .populate("group_id", "grade section school_year_id")
+      .populate({
+        path: "student_id",
+        select: "controlNumber first_name last_name sex phone workshop_group_id status",
+        populate: { path: "workshop_group_id", select: "grade section type" },
+      })
+      .populate("group_id", "grade section school_year_id shift type")
       .populate("school_year_id", "name startDate endDate isActive");
 
     if (!enrollment) {
