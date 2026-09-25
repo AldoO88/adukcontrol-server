@@ -14,6 +14,9 @@ const tenantFilter = (req) =>
 const getAllSchoolYears = async (req, res, next) => {
   try {
     const filter = { ...tenantFilter(req) };
+    if (req.query.school && mongoose.Types.ObjectId.isValid(req.query.school)) {
+      filter.school = req.query.school;
+    }
     const items = await SchoolYear.find(filter).sort({ startDate: -1 });
     res.status(200).json({ items, total: items.length });
   } catch (error) {
