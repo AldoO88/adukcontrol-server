@@ -14,7 +14,6 @@
 const fs = require("fs");
 const path = require("path");
 const Handlebars = require("handlebars");
-const puppeteer = require("puppeteer-core");
 const mongoose = require("mongoose");
 const Student = require("../models/Student.model");
 const School = require("../models/School.model");
@@ -81,6 +80,19 @@ function getChromePath() {
     }
   }
   return _chromePath;
+}
+
+// ── puppeteer-core load (ESM, lazy) ──────────────────────────────────
+// puppeteer-core ≥22 es ESM puro; no se puede usar `require()` desde un
+// módulo CommonJS en Node 20+. Hacemos dynamic import una sola vez y
+// cacheamos el resultado a nivel de módulo. El primer request paga
+// el coste de la carga; los siguientes son O(1).
+let _puppeteerPromise = null;
+function loadPuppeteer() {
+  if (!_puppeteerPromise) {
+    _puppeteerPromise = import("puppeteer-core").then((m) => m.default || m);
+  }
+  return _puppeteerPromise;
 }
 
 // ── Load templates from disk (cached) ───────────────────────────────
@@ -282,6 +294,8 @@ ${pages.map((p) => `<div class="page-break">${p}</div>`).join("\n")}
 
     const chromePath =
       process.env.CHROME_PATH || getChromePath();
+
+    const puppeteer = await loadPuppeteer();
 
     browser = await puppeteer.launch({
       executablePath: chromePath,
