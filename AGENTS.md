@@ -19,7 +19,7 @@ Express + MongoDB backend for **EdukControl**, a multi-tenant SaaS for school at
 - `node scripts/migrate-workshop-groups.js` — one-shot: convierte los talleres de Tecnología en grupos transversales `Group.type: "taller"`. Borra los 48 `TeacherSubject`/`ClassSchedule` de Tecnología que cada grupo de origen tenía (los 4 maestros en el mismo bloque) y crea 12 grupos taller (4 talleres × 3 grados) con su propio maestro y horario. Marca los grupos de origen como `type: "regular"` y asigna `Student.workshop_group_id` a cada alumno (distribución uniforme). **Idempotente** (aborta si ya hay grupos taller).
 - `node scripts/load-schedules.js` — reconstruye TODO el horario del ciclo (los 18 maestros) desde el array `SCHEDULES` transcrito del PDF de la escuela. Modo `DRY_RUN` (default): valida resoluciones (bloques, grupos, materias, maestros) y detecta conflictos de maestro (doble-book) y de grupo (dos materias en el mismo bloque) sin escribir. Para escribir: `DRY_RUN=0 node scripts/load-schedules.js`. **Borra y recrea todos los `TeacherSubject` y `ClassSchedule` del ciclo** — no es idempotente por maestro, el array es la fuente de verdad completa. Entradas `[day, "M1-M3"|"M2", subjectCode, target]` donde `target` es `1A`..`3D` o `TALLER:<grado>` (resuelto contra la sección del maestro en `TALLER_SECTION`). Los bloques del shift se mapean por nombre (`Módulo N` → `M{N}`). Verificación post-carga: cada grupo de origen debe quedar con exactamente 8 huecos (los bloques de taller transversal), y los grupos `taller` con sus 2 bloques por día LUN/MAR/MIE/JUE.
 - `node scripts/backfill-mark-absences.js` — marks absences for a given date (or today). Uses the same logic as the cronjob. `DRY_RUN=1` to simulate. **Backup before running in production.**
-- There is **no test framework, no test script, and no test directory**. Don't suggest `npm test`.
+- There is **no test framework, no test script, and no test directory**. Don't suggest `npm test`. Hay scripts de e2e manuales en `scripts/` (ver `e2e-hikvision-event.js` para el patrón).
 
 ## Entry points & layout
 
@@ -101,6 +101,7 @@ All under `/api` (no `/v1` prefix). Auth endpoints are under `/auth` (no `/api` 
 | GET/PUT/DELETE | `/api/enrollments/:enrollmentId` | JWT + role-scoped | |
 | POST | `/api/attendance/device-trigger` | **device API key** | Called by hardware. See below. |
 | GET/POST | `/iclock/cdata`, `/iclock/getrequest`, `/iclock/devicecmd` | **ZKTeco serial allowlist** | ADMS push from hybrid RFID + face terminals. Outside `/api` (path fixed in firmware). Plain-text responses only. See below. |
+| POST | `/hikvision/event/:token` | **event token in path** | HTTP Listening push from Hikvision DS-K1T3xx access terminals. Outside `/api`. Plain-text responses only. See below. |
 | GET | `/api/attendance/logs` | JWT + any staff role | Paginated (`limit` max 200), filter by `student_id`, `event_type`, `from`, `to`. |
 | POST | `/api/conduct-logs` | JWT + staff (admin, principal, registrar, teacher, prefect, social_worker) | Crea un evento de conducta (`eventType: "demerit" \| "merit"`). `points_impact` se copia de la `ConductConfig` vigente de la escuela. Invalida el cache del dashboard de los tutores del alumno. |
 | GET | `/api/conduct-logs` | JWT + staff | Lista paginada, filtra por `student_id`, `school_year_id`, `eventType`, `severity`, `status`, `from`, `to`. |
@@ -122,6 +123,7 @@ Health: `GET /health` (unauthenticated). Root: `GET /` returns service banner.
 1. **User JWT** — `Authorization: Bearer <token>`. Token payload: `{ _id, email, name, role, schoolId }`. Verified in `middleware/jwt.middleware.js#isAuthenticated`; role gate via `middleware/authorize.middleware.js#authorize(...roles)`.
 2. **Device API key** — consumed by `POST /api/attendance/device-trigger`. Header `X-Device-Api-Key` (or `X-Api-Key`, or `body.api_key`) must match `DEVICE_TRIGGER_API_KEY` via `crypto.timingSafeEqual`. Rate-limited separately at 300 req/min.
 3. **ZKTeco serial allowlist** — consumed by `/iclock/*`. The firmware can't send custom headers, so the `SN` query param is checked against `ADMS_ALLOWED_SERIALS`. Rate-limited at 600 req/min (terminals poll for commands every few seconds).
+4. **Hikvision event token** — consumed by `/hikvision/event/:token`. The token is generated with `openssl rand -hex 32`, configured on the device in the form `System Configuration → HTTP(S) → HTTP Listening` (campo `URL = /hikvision/event/<token>`) and on the server in `HIKVISION_EVENT_TOKEN`. Validated with `crypto.timingSafeEqual`. Rate-limited at 300 req/min. The token travels in the URL path (not in headers and not as a query param) because the Hikvision firmware only sends a fixed POST to the configured URL.
 
 `app.set('trust proxy', 1)` is set in `config/index.js` so rate limiting works correctly behind a reverse proxy — keep it.
 
@@ -184,11 +186,102 @@ Protocol rules that are easy to break:
 - **Cross-tenant ambiguity.** `biometricId` is unique *per school*, and the push carries no tenant context, so the same PIN can exist in two schools. The lookup uses `.limit(2)`: two matches → the record is dropped with an `ambiguous` warning rather than credited to the wrong student. Set `ADMS_DEVICE_SCHOOL_MAP` (`{"<SN>":"<schoolId>"}`) to scope each terminal to one school and remove the ambiguity entirely.
 - A JSON/urlencoded body is also accepted (for integrators that put middleware in front of the device): `{ Card, PIN | User_ID, DateTime, Verify?, snapshotUrl? }`, a bare array, or `{ records: [...] }` / `{ data: [...] }`.
 
+## Hikvision ISAPI HTTP Listening push (`/hikvision/event/:token`)
+
+Terminales Hikvision (DS-K1T3xx — actualmente en producción las DS-K1T323EBWX-E1) usan ISAPI con un modo **HTTP Listening** que las hace POSTear eventos a un servidor HTTP externo. La configuración se hace desde la web UI de la terminal en **System Configuration → HTTP(S) → HTTP Listening** (o vía `PUT /ISAPI/Event/notification/httpHosts/1` desde un script con auth Digest). El backend expone `POST /hikvision/event/<HIKVISION_EVENT_TOKEN>` en `controllers/hikvision.controller.js` + `routes/hikvision.routes.js`, montado en `app.js` fuera de `/api` (igual que `/iclock`).
+
+### Configuración del dispositivo
+
+Llenar el form **HTTP Listening** con estos valores:
+
+| Campo | Valor |
+|---|---|
+| Event Alarm IP/Domain Name | `<tu-servicio>.onrender.com` (sin `https://`) |
+| URL | `/hikvision/event/<HIKVISION_EVENT_TOKEN>` |
+| Port | `80` |
+| Protocol | `HTTP` primero (evita certs); probar `HTTPS/443` después |
+
+Mismo valor de `<HIKVISION_EVENT_TOKEN>` va en el `.env`/Render del backend. Generar con `openssl rand -hex 32`.
+
+### Protocolo esperado
+
+La terminal empuja un `EventNotificationAlert` XML (o JSON si `parameterFormatType=JSON`) por cada evento de autenticación. Ejemplo de body:
+
+```xml
+<?xml version="1.0" encoding="UTF-8"?>
+<EventNotificationAlert version="1.0" xmlns="http://www.hikvision.com/ver20/XMLSchema">
+  <ipAddress>192.168.100.42</ipAddress>
+  <macAddress>aa:bb:cc:dd:ee:ff</macAddress>
+  <channelID>1</channelID>
+  <dateTime>2026-09-29T13:31:55+00:00</dateTime>
+  <activePostCount>1</activePostCount>
+  <eventType>AccessControllerEvent</eventType>
+  <eventState>active</eventState>
+  <AccessControllerEvent>
+    <majorEventType>5</majorEventType>     <!-- 5 = Access Event -->
+    <subEventType>75</subEventType>         <!-- 75 = Face Auth Success -->
+    <employeeNoString>2610912001</employeeNoString>
+    <cardNo>...optional...</cardNo>
+    <doorNo>1</doorNo>
+  </AccessControllerEvent>
+</EventNotificationAlert>
+```
+
+`majorEventType=5` (Access Event) es el único que genera un `AttendanceLog`. Otros major (alarmas, tamper, etc.) llegan pero el backend los registra y acka sin crear log. `subEventType` mapea a `verificationMode`: `75/76` → `FACE`; `1..5` → `RFID`; cualquier otro con `cardNo` → `RFID`, sin `cardNo` → `FACE` (fallback).
+
+### Reglas que son fáciles de romper
+
+- **Siempre responder `200` con `text/plain`.** Un 4xx/5xx (o un body JSON) hace que la terminal reenvíe el evento en loop hasta llenar su buffer. Lo mismo que ADMS. Token inválido → `401 text/plain`; cualquier otra condición (evento sin identificador, alumno no matcheado, duplicado, JSON malformado) → `200 OK: 0` o `200 OK: 1`.
+- **El parser loguea el body crudo (info level)**. Las primeras capturas reales con una terminal en sitio son la mejor forma de validar que el árbol XML/JSON coincide con la estructura esperada — revisar la consola del server después del primer punch de prueba.
+- **Auth = token en path.** El firmware Hikvision NO permite cabeceras personalizadas. El token vive en el path (`/hikvision/event/<token>`), validado con `crypto.timingSafeEqual` contra `HIKVISION_EVENT_TOKEN`. Es un secreto: la URL completa NO debe quedar en logs de proxy (path token, no query).
+- **Reuso total del flujo de asistencia.** Después de parsear, el controller matchea al alumno con el mismo `$or: [{biometricId}, {rfid_card}, {controlNumber}]` que `device-trigger` y llama a `attendanceService.registerAttendanceEvent`. Eso significa dedup ±60s, alternancia entry/exit, cálculo de late/absent y push notifications funcionan igual que en los demás endpoints.
+- **Cross-tenant ambiguity.** El `$or` con tres campos puede dar más de un match si dos alumnos comparten identificador en distintas escuelas. Mismo patrón que ADMS: `Student.find().limit(2)` y drop con `ambiguous` warning si hay más de uno. Con la convención `biometricId == controlNumber`, una escuela no puede tener dos alumnos con el mismo `biometricId` salvo colisión con un manual override.
+- **`device` se guarda como `hikvision@<MAC o IP>`.** La MAC es más estable que la IP (la IP puede cambiar por DHCP). `controllers/hikvision.controller.js` prefiere MAC; fallback a IP si la MAC no viene en el payload.
+- **Timestamps con offset ISO.** La terminal envía `dateTime` con offset de zona (ej. `2026-09-29T13:31:55-06:00`). El controller parsea con `new Date()` que respeta el offset y queda un `Date` UTC correcto — `attendanceService.isAfterGracePeriod` usa `ADMS_TZ_OFFSET_MINUTES` para convertir de vuelta a local, así que la terminal y el server DEBEN coincidir en zona horaria (idealmente UTC-6 = `ADMS_TZ_OFFSET_MINUTES=-360`).
+
+### Configurar la terminal vía API (alternativa al form UI)
+
+`scripts/hikvision-configure-push.sh` automatiza el `PUT /ISAPI/Event/notification/httpHosts/1` con auth Digest. Útil para instalaciones futuras; corre desde la LAN de la escuela.
+
+### Verificación manual
+
+```bash
+# 1. Generar token
+TOKEN=$(openssl rand -hex 32)
+echo "Pegar en .env del backend: HIKVISION_EVENT_TOKEN=$TOKEN"
+echo "Pegar en el form HTTP Listening de la terminal: URL=/hikvision/event/$TOKEN"
+
+# 2. Disparar un rostro de prueba y verificar:
+curl -s -o /dev/null -w "%{http_code}\n" https://<api>/hikvision/event/0000000000000000000000000000000000000000000000000000000000000000
+#   → 401 (token incorrecto)
+
+# 3. (con el token correcto, después del deploy) pegar una cara y revisar
+#   el log del servidor — debería aparecer "[hikvision] entry/exit log created ...".
+```
+
+E2E completo: `node scripts/e2e-hikvision-event.js` (cubre 401, body vacío, body malformado, face XML, dedup, card XML, JSON, sin identificador, verificación de `biometricId == controlNumber`).
+
+## Convención `biometricId` = `controlNumber`
+
+Las terminales (ZKTeco ADMS con PIN numérico, Hikvision ISAPI con `employeeNo`) matchean al alumno contra un identificador que **configura el admin al enrollerlo** en la terminal. La convención adoptada es usar `controlNumber` directamente:
+
+- Es 100% numérico (10 dígitos: `YY(2) + SHIFT(1) + CCT4(4) + CONSEC(3)`), aceptado por cualquier firmware que espere un User ID / PIN numérico.
+- Es único por escuela (índice compuesto `{ school, controlNumber }`, secuencia atómica en el pre-save de Student).
+- Es auto-generado — no requiere asignación manual, cero typos.
+- Ya está incluido en los lookups `$or` de los tres endpoints de asistencia (`/api/attendance/device-trigger`, `/iclock/cdata`, `/hikvision/event/:token`), así que los punches resuelven sin necesidad de tocar `biometricId`.
+- Es legible: cuando aparece en el payload crudo (`employeeNoString=2610912001`), es inmediatamente identificable.
+
+Implementación: el pre-save hook en `models/Student.model.js` autocompleta `this.biometricId = this.controlNumber` si no se especificó en el body. Los alumnos existentes se migraron con `scripts/migrate-biometric-id-from-control-number.js` (idempotente: solo llena `biometricId: null` por default; `--force` sobrescribe manuales).
+
+Un override manual sigue siendo posible (`PUT /api/students/:studentId` con `biometricId` explícito) — útil para casos de excepción. El índice único `{ school, biometricId }` previene duplicados accidentales.
+
 ## Required environment (.env)
 
 `MONGO_URI`, `SECRET_KEY` (≥32 chars, used for JWT), `FIREBASE_SERVICE_ACCOUNT_PATH`, `DEVICE_TRIGGER_API_KEY`, `PORT` (default 5000), `NODE_ENV` (default `development`), `ORIGIN` (default `http://localhost:5173`).
 
 `ADMS_ALLOWED_SERIALS` — comma-separated allowlist of ZKTeco terminal serial numbers permitted to push to `/iclock/*`. **Required in production**: if unset, any SN is accepted (a warning is logged per request).
+
+`HIKVISION_EVENT_TOKEN` — opaque token (≥ 32 chars, generate with `openssl rand -hex 32`) that travels in the URL path of the Hikvision HTTP Listening push. Configured on the device in the form `System Configuration → HTTP(S) → HTTP Listening` (campo `URL = /hikvision/event/<token>`) and on the server in this env. **Required in production**: if unset, `/hikvision/event/:token` rejects all requests with 503. See the "Hikvision ISAPI HTTP Listening push" section below.
 
 `ADMS_TZ_OFFSET_MINUTES` — offset in minutes between the terminals' local wall-clock time and UTC (e.g. `-360` for UTC−6). Set it whenever the backend does not run in the school's timezone, or every punch will be stored hours off.
 

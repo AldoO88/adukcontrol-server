@@ -39,6 +39,7 @@ const indexRoutes = require("./routes/index.routes");
 const authRouter = require("./routes/auth.routes");
 const authWebhooksRouter = require("./routes/auth-webhooks.routes");
 const admsRouter = require("./routes/adms.routes");
+const hikvisionRouter = require("./routes/hikvision.routes");
 
 app.use("/api", indexRoutes); // /api/students, /api/attendance, /api/groups, /api/enrollments
 app.use("/auth", authRouter); // /auth/signup, /auth/login, /auth/verify
@@ -46,6 +47,11 @@ app.use("/auth/webhooks", authWebhooksRouter); // /auth/webhooks/twilio/...
 // /iclock/* — push de las terminales ZKTeco (ADMS). Va fuera de /api porque
 // la ruta está fija en el firmware del dispositivo y no es configurable.
 app.use("/iclock", admsRouter);
+// /hikvision/event/<token> — push HTTP Listening de las terminales Hikvision
+// (ISAPI httpHosts). La URL completa la elegimos nosotros (la escribimos en
+// el form "HTTP Listening" de la UI de la terminal), así que el path vive
+// fuera de /api pero no está atado al firmware.
+app.use("/hikvision", hikvisionRouter);
 
 require("./error-handling")(app); // 404 + manejador central de errores
 

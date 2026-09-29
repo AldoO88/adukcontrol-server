@@ -541,6 +541,22 @@ studentSchema.pre("save", async function (next) {
     }
 
     this.controlNumber = `${prefix}${String(nextConsec).padStart(3, "0")}`;
+
+    // === Convencional: Employee ID en la terminal = número de control ===
+    // Para todas las terminales (ZKTeco ADMS con PIN numérico e Hikvision
+    // ISAPI con employeeNo), el identificador que la terminal usa para
+    // matchear al alumno es el controlNumber generado arriba: 10 dígitos,
+    // numérico, único por escuela. Si no se especificó biometricId en el
+    // body, lo autocompletamos aquí para que el web UI muestre "Employee ID
+    // en la terminal = número de control" y el match $or de los endpoints
+    // de asistencia (device-trigger, /iclock/cdata, /hikvision/event) ya
+    // tenga un valor consistente.
+    // Un override explícito (body.biometricId) sigue siendo respetado: el
+    // pre-save solo completa cuando this.biometricId sigue siendo null/undefined.
+    if (!this.biometricId) {
+      this.biometricId = this.controlNumber;
+    }
+
     next();
   } catch (err) {
     next(err);
