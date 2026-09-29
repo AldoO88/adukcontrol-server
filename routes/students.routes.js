@@ -32,7 +32,7 @@ router.use(isAuthenticated); // Todas las rutas requieren JWT
 // POST /api/students/register — crear estudiante
 router.post(
   "/register",
-  authorize("admin", "registrar"),
+  authorize("admin", "registrar", "super_admin"),
   createStudent
 );
 
@@ -99,14 +99,14 @@ router.post(
 // GET /api/students/:studentId/enrollments — historial académico
 router.get(
   "/:studentId/enrollments",
-  authorize("admin", "principal", "registrar", "teacher", "prefect", "social_worker"),
+  authorize("admin", "principal", "registrar", "teacher", "prefect", "social_worker", "super_admin"),
   getStudentEnrollments
 );
 
 // GET /api/students/:studentId/academic-history — vista consolidada
 router.get(
   "/:studentId/academic-history",
-  authorize("admin", "principal", "registrar", "teacher", "prefect", "social_worker"),
+  authorize("admin", "principal", "registrar", "teacher", "prefect", "social_worker", "super_admin"),
   getStudentAcademicHistory
 );
 

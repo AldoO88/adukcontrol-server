@@ -1,221 +1,157 @@
 // Controlador de Credenciales
-// Genera PDFs de credenciales de alumnos (estilo "credencial escolar").
-// GET /api/students/credentials?school_year_id=...&ids=a,b,c
-//   - Sin "ids": genera credencial para TODOS los alumnos activos del ciclo.
-//   - Con "ids" (csv): genera solo para esos alumnos.
-//   - Devuelve application/pdf stream.
+// Genera PDFs de credenciales de alumnos. Cuatro fuentes de diseño, en orden
+// de prioridad:
+//   1. template PDF CR80 (School.credentialTemplate.pdf + sides)
+//      → services/credential-pdf.service (pdf-lib, composición directa)
+//   2. layout visual legacy (School.credentialTemplate.layout)
+//      → services/credential-layout.service
+//   3. HTML personalizado (School.credentialTemplate.html) con Handlebars
+//   4. templates/credentials/front.hbs + back.hbs (por defecto)
+// Las fuentes 2–4 se convierten a PDF con puppeteer-core (Chrome del sistema).
 //
-// Diseño de la credencial (formato card 85.6mm × 54mm — tamaño ID-1):
-//   Lado A: logo de la escuela, foto del alumno, nombre, no. control, grado/grupo
-//   Lado B: dirección de la escuela, ciclo escolar, año, código QR
-//   QR contiene: controlNumber|name|school|year (validable offline)
+// GET /api/students/credentials?school_year_id=...&school=...&ids=a,b,c
 
-const PDFDocument = require("pdfkit");
-const QRCode = require("qrcode");
+const fs = require("fs");
+const path = require("path");
+const Handlebars = require("handlebars");
+const puppeteer = require("puppeteer-core");
+const mongoose = require("mongoose");
 const Student = require("../models/Student.model");
 const School = require("../models/School.model");
 const SchoolYear = require("../models/SchoolYear.model");
-const Group = require("../models/Group.model");
+const Enrollment = require("../models/Enrollment.model");
+const {
+  layoutHasContent,
+  renderLayoutPage,
+  buildTemplateData,
+} = require("../services/credential-layout.service");
+const {
+  credentialTemplateHasContent,
+} = require("../services/credential-template.service");
+const {
+  composeCredentialsPdf,
+} = require("../services/credential-pdf.service");
 
-const tenantFilter = (req) =>
-  req.payload.role === "super_admin" ? {} : { school: req.payload.schoolId };
+// ── Handlebars helpers ──────────────────────────────────────────────
+Handlebars.registerHelper("formatGrade", function (grade, section) {
+  return `${grade}° ${section || ""}`.trim();
+});
 
-// Genera el PDF en chunks via async generator.
-async function* buildCredentialPdf({ school, schoolYear, students }) {
-  const doc = new PDFDocument({
-    size: "A4",
-    margins: { top: 30, bottom: 30, left: 30, right: 30 },
-    autoFirstPage: true,
-    info: {
-      Title: `Credenciales ${school.name} - ${schoolYear.name}`,
-      Author: school.name,
-      Subject: "Credenciales escolares",
-    },
-  });
+Handlebars.registerHelper("formatShift", function (shift) {
+  const map = { matutino: "Matutino", vespertino: "Vespertino" };
+  return map[shift] || shift || "";
+});
 
-  // Buffer collection
-  const chunks = [];
-  doc.on("data", (c) => chunks.push(c));
-  const endPromise = new Promise((resolve) => {
-    doc.on("end", () => resolve());
-  });
+Handlebars.registerHelper("uppercase", function (str) {
+  return (str || "").toUpperCase();
+});
 
-  // Genera QR codes en paralelo (QRCode.toBuffer es async)
-  const qrCodes = await Promise.all(
-    students.map((s) => {
-      const payload = JSON.stringify({
-        controlNumber: s.controlNumber,
-        name: `${s.first_name} ${s.last_name || ""}`.trim(),
-        school: school.name,
-        cycle: schoolYear.name,
-      });
-      return QRCode.toBuffer(payload, {
-        errorCorrectionLevel: "M",
-        margin: 1,
-        width: 200,
-      });
-    })
-  );
+Handlebars.registerHelper("@index_plus_one", function () {
+  return this["@index"] !== undefined ? this["@index"] + 1 : "";
+});
 
-  // Layout: 1 credencial por página A4 (centrada). Tarjeta ID-1 = 85.6×54mm.
-  // 85.6mm = 242.6 pt (1 mm = 2.835 pt); 54mm = 153 pt.
-  const cardW = 242.6;
-  const cardH = 153;
-  const pageW = doc.page.width;
-  const pageH = doc.page.height;
-  const margin = 30;
-
-  for (let i = 0; i < students.length; i++) {
-    const s = students[i];
-    if (i > 0) doc.addPage();
-
-    const cardX = (pageW - cardW) / 2;
-    const cardY = (pageH - cardH) / 2;
-    const qr = qrCodes[i];
-
-    // Header: nombre de la escuela (en negrita)
-    doc
-      .fillColor("#0f172a")
-      .fontSize(11)
-      .font("Helvetica-Bold")
-      .text(school.name.toUpperCase(), cardX, cardY + 8, {
-        width: cardW,
-        align: "center",
-      });
-
-    // Subtítulo: nombre honorífico
-    if (school.honoraryName) {
-      doc
-        .fontSize(7)
-        .font("Helvetica-Oblique")
-        .fillColor("#475569")
-        .text(school.honoraryName, cardX, cardY + 22, {
-          width: cardW,
-          align: "center",
-        });
-    }
-
-    // Avatar circle (placeholder con iniciales si no hay foto)
-    const avatarR = 22;
-    const avatarX = cardX + cardW / 2 - avatarR;
-    const avatarY = cardY + 38;
-    if (s.photoUrl) {
-      try {
-        doc.image(s.photoUrl, avatarX, avatarY, {
-          fit: [avatarR * 2, avatarR * 2],
-          align: "center",
-          valign: "center",
-        });
-      } catch {
-        drawInitialsCircle(doc, s, avatarX, avatarY, avatarR);
-      }
-    } else {
-      drawInitialsCircle(doc, s, avatarX, avatarY, avatarR);
-    }
-
-    // Nombre
-    doc
-      .fillColor("#0f172a")
-      .fontSize(11)
-      .font("Helvetica-Bold")
-      .text(
-        `${s.first_name || ""} ${s.last_name || ""}`.trim() || "—",
-        cardX,
-        cardY + 88,
-        { width: cardW, align: "center" }
-      );
-
-    // Número de control + grado/grupo
-    const groupLabel = s.current_group_id
-      ? `${s.current_group_id.grade}°${s.current_group_id.section}`
-      : "—";
-    doc
-      .fontSize(8)
-      .font("Helvetica")
-      .fillColor("#475569")
-      .text(
-        `No. Control: ${s.controlNumber || "—"}   ·   Grado: ${groupLabel}`,
-        cardX,
-        cardY + 104,
-        { width: cardW, align: "center" }
-      );
-
-    // Footer: ciclo escolar
-    doc
-      .fontSize(7)
-      .font("Helvetica")
-      .fillColor("#64748b")
-      .text(`Ciclo Escolar ${schoolYear.name}`, cardX, cardY + 122, {
-        width: cardW,
-        align: "center",
-      });
-
-    // QR en esquina inferior derecha
-    const qrSize = 36;
-    doc.image(qr, cardX + cardW - qrSize - 8, cardY + cardH - qrSize - 8, {
-      width: qrSize,
-      height: qrSize,
-    });
-
-    // Borde de la tarjeta
-    doc
-      .lineWidth(1)
-      .strokeColor("#cbd5e1")
-      .roundedRect(cardX, cardY, cardW, cardH, 6)
-      .stroke();
+// ── Chrome path detection ───────────────────────────────────────────
+function findChromePath() {
+  const candidates = [
+    // macOS
+    "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+    "/Applications/Chromium.app/Contents/MacOS/Chromium",
+    // Linux
+    "/usr/bin/google-chrome",
+    "/usr/bin/chromium-browser",
+    "/usr/bin/chromium",
+    // Windows
+    "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe",
+    "C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe",
+  ];
+  for (const p of candidates) {
+    if (fs.existsSync(p)) return p;
   }
-
-  doc.end();
-  await endPromise;
-  yield* chunks;
+  return null;
 }
 
-function drawInitialsCircle(doc, student, x, y, r) {
-  const initials = `${(student.first_name || "?").charAt(0)}${
-    (student.last_name || "").charAt(0) || ""
-  }`.toUpperCase();
-  doc
-    .save()
-    .fillColor("#e0f2fe")
-    .circle(x + r, y + r, r)
-    .fill();
-  doc
-    .fillColor("#0369a1")
-    .fontSize(14)
-    .font("Helvetica-Bold")
-    .text(initials, x, y + r - 7, { width: r * 2, align: "center" })
-    .restore();
+let _chromePath = null;
+function getChromePath() {
+  if (!_chromePath) {
+    _chromePath = findChromePath();
+    if (!_chromePath) {
+      throw new Error(
+        "Chrome not found. Install Google Chrome or set CHROME_PATH env var."
+      );
+    }
+  }
+  return _chromePath;
 }
 
-// GET /api/students/credentials
-// Query params:
-//   school_year_id — required
-//   ids            — optional csv (lista de student._id a incluir)
-// Auth: admin/registrar/super_admin.
+// ── Load templates from disk (cached) ───────────────────────────────
+let _frontTemplate = null;
+let _backTemplate = null;
+
+function getTemplates() {
+  if (!_frontTemplate) {
+    const dir = path.join(__dirname, "..", "templates", "credentials");
+    const frontRaw = fs.readFileSync(path.join(dir, "front.hbs"), "utf8");
+    const backRaw = fs.readFileSync(path.join(dir, "back.hbs"), "utf8");
+    _frontTemplate = Handlebars.compile(frontRaw);
+    _backTemplate = Handlebars.compile(backRaw);
+  }
+  return { front: _frontTemplate, back: _backTemplate };
+}
+
+// ── Custom template uploaded by the school (cached per updatedAt) ───
+// Si la escuela subió un diseño HTML (School.credentialTemplate.html)
+// se usa ese como template; cada alumno renderiza UNA sola página, por lo
+// que el HTML custom debe traer su propio salto de página entre frente y
+// reverso (style="page-break-after: always" en la primera cara).
+// Si está vacío, se hace fallback a templates/credentials/front.hbs + back.hbs.
+const _customTemplates = new Map(); // key: `${schoolId}:${updatedAtMs}`
+
+function getCustomTemplate(schoolDoc) {
+  const html = schoolDoc.credentialTemplate?.html;
+  if (typeof html !== "string" || !html.trim()) return null;
+
+  const updatedAtMs = schoolDoc.credentialTemplate.updatedAt
+    ? new Date(schoolDoc.credentialTemplate.updatedAt).getTime()
+    : 0;
+  const key = `${schoolDoc._id}:${updatedAtMs}`;
+
+  let compiled = _customTemplates.get(key);
+  if (!compiled) {
+    compiled = Handlebars.compile(html);
+    // Invalida la entrada anterior de esta escuela (solo se cachea 1 por escuela).
+    for (const k of _customTemplates.keys()) {
+      if (k.startsWith(`${schoolDoc._id}:`)) _customTemplates.delete(k);
+    }
+    _customTemplates.set(key, compiled);
+  }
+  return compiled;
+}
+
+// ── Build template data ─────────────────────────────────────────────
+// (buildTemplateData vive en services/credential-layout.service.js y se
+// comparte con la impresión PDF CR80.)
+
+// ── GET /api/students/credentials ───────────────────────────────────
 const generateCredentialsPdf = async (req, res, next) => {
+  let browser = null;
   try {
     const { school_year_id, ids } = req.query;
 
-    if (
-      !school_year_id ||
-      !mongoose.Types.ObjectId.isValid(school_year_id)
-    ) {
-      return res.status(400).json({ message: "Valid school_year_id is required." });
+    if (!school_year_id || !mongoose.Types.ObjectId.isValid(school_year_id)) {
+      return res
+        .status(400)
+        .json({ message: "Valid school_year_id is required." });
     }
 
     const isSuperAdmin = req.payload.role === "super_admin";
-    const school = isSuperAdmin
-      ? req.query.school
-      : req.payload.schoolId;
+    const school = isSuperAdmin ? req.query.school : req.payload.schoolId;
     if (!school) {
       return res
         .status(400)
         .json({ message: "school is required (super_admin must pass it)." });
     }
-    const schoolId =
-      typeof school === "string" ? school : school.toString();
+    const schoolId = typeof school === "string" ? school : school.toString();
 
-    // Verificar escuela
     const schoolDoc = await School.findById(schoolId).lean();
     if (!schoolDoc) {
       return res.status(404).json({ message: "School not found." });
@@ -231,11 +167,7 @@ const generateCredentialsPdf = async (req, res, next) => {
         .json({ message: "School year not found for this school." });
     }
 
-    // Cargar alumnos
-    const filter = {
-      school: schoolId,
-      status: "active",
-    };
+    const filter = { school: schoolId, status: "active" };
     if (ids) {
       const idList = String(ids)
         .split(",")
@@ -245,11 +177,24 @@ const generateCredentialsPdf = async (req, res, next) => {
         return res.status(400).json({ message: "No valid ids provided." });
       }
       filter._id = { $in: idList };
+    } else {
+      // Sin ids → los alumnos inscritos ("enrolled") en EL CICLO, mismos
+      // criterios que lista la página de credenciales (bajas del ciclo
+      // quedan fuera).
+      const enrolledIds = await Enrollment.distinct("student_id", {
+        school: schoolId,
+        school_year_id,
+        cycle_status: "enrolled",
+      });
+      filter._id = { $in: enrolledIds };
     }
 
     const students = await Student.find(filter)
-      .select("controlNumber first_name last_name photoUrl current_group_id")
-      .populate("current_group_id", "grade section")
+      .select(
+        "controlNumber first_name last_name photoUrl current_group_id blood_type sex guardians"
+      )
+      .populate("current_group_id", "grade section shift")
+      .populate("guardians", "name lastname relationship phone")
       .sort({ last_name: 1, first_name: 1 })
       .lean();
 
@@ -257,31 +202,121 @@ const generateCredentialsPdf = async (req, res, next) => {
       return res.status(404).json({ message: "No students match criteria." });
     }
 
-    // Set response headers
-    const filename = `credenciales-${schoolDoc.cct}-${schoolYearDoc.name}.pdf`
-      .replace(/[^a-zA-Z0-9.-]/g, "_");
+    // Cadena de diseño (1): template PDF CR80 — composición directa con
+    // pdf-lib, sin navegador. Escala el fondo "contain" al marco CR80 y
+    // estampa foto/textos en las coordenadas guardadas por alumno.
+    const tpl = schoolDoc.credentialTemplate;
+    if (credentialTemplateHasContent({ pdf: tpl?.pdf, sides: tpl?.sides })) {
+      const cr80Buffer = await composeCredentialsPdf({
+        pdfMeta: tpl.pdf,
+        sides: tpl.sides,
+        students,
+        school: schoolDoc,
+        schoolYear: schoolYearDoc,
+      });
+      const cr80Filename = `credenciales-${schoolDoc.cct}-${schoolYearDoc.name}.pdf`.replace(
+        /[^a-zA-Z0-9.-]/g,
+        "_"
+      );
+      res.setHeader("Content-Type", "application/pdf");
+      res.setHeader(
+        "Content-Disposition",
+        `attachment; filename="${cr80Filename}"`
+      );
+      return res.send(Buffer.from(cr80Buffer));
+    }
+
+    // Cadena de diseño (legacy): layout visual → HTML personalizado →
+    // templates front.hbs/back.hbs de disco (render con Puppeteer).
+    const layout = schoolDoc.credentialTemplate?.layout;
+    const useLayout = layoutHasContent(layout);
+    const customTemplate = useLayout ? null : getCustomTemplate(schoolDoc);
+    const diskTemplates = useLayout || customTemplate ? null : getTemplates();
+
+    const pages = [];
+    for (const student of students) {
+      const data = buildTemplateData({
+        student,
+        group: student.current_group_id,
+        school: schoolDoc,
+        schoolYear: schoolYearDoc,
+      });
+      if (useLayout) {
+        pages.push(
+          renderLayoutPage(layout.front?.background, layout.front?.elements, data)
+        );
+        const backPage = layout.back;
+        const hasBack =
+          backPage &&
+          ((backPage.elements && backPage.elements.length > 0) ||
+            (backPage.background && backPage.background.type !== "none"));
+        if (hasBack) {
+          pages.push(
+            renderLayoutPage(backPage.background, backPage.elements, data)
+          );
+        }
+      } else if (customTemplate) {
+        pages.push(customTemplate(data));
+      } else {
+        pages.push(diskTemplates.front(data), diskTemplates.back(data));
+      }
+    }
+
+    const fullHtml = `<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8"/>
+<style>
+  @page { size: Letter; margin: 0; }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { font-family: 'Helvetica Neue', Arial, sans-serif; }
+  .page-break { page-break-after: always; }
+  .page-break:last-child { page-break-after: auto; }
+  .cred-page { position: relative; width: 816px; height: 1056px; overflow: hidden; background: #fff; }
+</style>
+</head>
+<body>
+${pages.map((p) => `<div class="page-break">${p}</div>`).join("\n")}
+</body>
+</html>`;
+
+    const chromePath =
+      process.env.CHROME_PATH || getChromePath();
+
+    browser = await puppeteer.launch({
+      executablePath: chromePath,
+      headless: "new",
+      args: ["--no-sandbox", "--disable-setuid-sandbox"],
+    });
+
+    const page = await browser.newPage();
+    await page.setContent(fullHtml, { waitUntil: "networkidle0" });
+
+    const pdfBuffer = await page.pdf({
+      format: "Letter",
+      printBackground: true,
+      margin: { top: "0", right: "0", bottom: "0", left: "0" },
+    });
+
+    await browser.close();
+    browser = null;
+
+    const filename = `credenciales-${schoolDoc.cct}-${schoolYearDoc.name}.pdf`.replace(
+      /[^a-zA-Z0-9.-]/g,
+      "_"
+    );
     res.setHeader("Content-Type", "application/pdf");
     res.setHeader(
       "Content-Disposition",
       `attachment; filename="${filename}"`
     );
-
-    // Stream el PDF
-    for await (const chunk of buildCredentialPdf({
-      school: schoolDoc,
-      schoolYear: schoolYearDoc,
-      students,
-    })) {
-      res.write(chunk);
-    }
-    res.end();
+    res.send(Buffer.from(pdfBuffer));
   } catch (error) {
+    if (browser) {
+      await browser.close().catch(() => {});
+    }
     next(error);
   }
 };
 
-const mongoose = require("mongoose");
-
-module.exports = {
-  generateCredentialsPdf,
-};
+module.exports = { generateCredentialsPdf };

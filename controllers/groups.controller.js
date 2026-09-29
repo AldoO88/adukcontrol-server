@@ -40,7 +40,7 @@ const getAllGroups = async (req, res, next) => {
     }
 
     const groups = await Group.find(filter)
-      .populate("head_teacher_id", "first_name last_name email role")
+      .populate("head_teacher_id", "name last_name email role")
       .populate("school_year_id", "name startDate endDate isActive")
       .sort({ grade: 1, section: 1 });
     res.status(200).json(groups);
@@ -85,7 +85,7 @@ const getGroupById = async (req, res, next) => {
       _id: groupId,
       ...tenantFilter(req),
     })
-      .populate("head_teacher_id", "first_name last_name email role")
+      .populate("head_teacher_id", "name last_name email role")
       .populate("school_year_id", "name startDate endDate isActive");
 
     if (!group) {

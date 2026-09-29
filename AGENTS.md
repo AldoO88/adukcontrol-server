@@ -92,7 +92,7 @@ All under `/api` (no `/v1` prefix). Auth endpoints are under `/auth` (no `/api` 
 | GET | `/api/students/:studentId` | JWT + any staff role | |
 | PUT | `/api/students/:studentId` | JWT + `admin`/`registrar` | `school` cannot be changed by non-`super_admin`. |
 | DELETE | `/api/students/:studentId` | JWT + `admin`/`registrar` | |
-| POST | `/api/students/:studentId/photo` | JWT + `admin`/`registrar`/`super_admin` | `multipart/form-data` field `photo` (JPEG/PNG/WebP, ≤5MB). Streams to Cloudinary with auto face-centered 300x300 WebP. |
+| POST | `/api/students/:studentId/photo` | JWT + `admin`/`registrar`/`super_admin` | `multipart/form-data` field `photo` (JPEG/PNG/WebP, ≤5MB). El cliente **debe** recortar la imagen manualmente con un encuadre cuadrado (modal en el expediente) antes de subirla; el backend solo la re-escala a 300x300 WebP con `crop: "fill"` en Cloudinary. |
 | GET | `/api/groups` | JWT + any staff role | |
 | POST | `/api/groups` | JWT + `admin`/`registrar` | |
 | GET/PUT/DELETE | `/api/groups/:groupId` | JWT + role-scoped | |

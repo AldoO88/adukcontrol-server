@@ -23,11 +23,21 @@ const guardianSchema = new Schema(
       default: null,
       index: true,
     },
-    // Nombre completo del tutor
+    // Nombres del tutor (sin apellidos). Mapea 1:1 con `User.name`
+    // para que la creación del User con el helper `ensureTutorUser`
+    // pueda pasar ambos sin ambigüedad.
     name: {
       type: String,
       required: [true, "Guardian name is required."],
       trim: true,
+    },
+    // Apellidos del tutor. Mapea 1:1 con `User.last_name`. Por
+    // compatibilidad histórica queda `default: ""` (los Guardians
+    // preexistentes guardaban el nombre completo en `name`).
+    lastname: {
+      type: String,
+      trim: true,
+      default: "",
     },
     sex: {
       type: String,

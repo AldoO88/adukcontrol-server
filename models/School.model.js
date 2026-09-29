@@ -76,6 +76,38 @@ const schoolSchema = new Schema(
       default: ["BASIC"],
       required: [true, "Educational levels are required."],
     },
+    // HTML template for credential generation.
+    // The school uploads a custom HTML design with Handlebars placeholders
+    // (e.g. {{student.first_name}}, {{school.name}}).
+    // `layout` guarda el diseño del diseñador visual (drag & drop):
+    //   { version, background: { type: "image"|"css"|"none", url?, css? },
+    //     front: [Element], back: [Element] }
+    // Las coordenadas (x, y, w, h) son px sobre un lienzo 816x1056
+    // (Letter @96dpi), igual que al imprimir con Chrome.
+    credentialTemplate: {
+      html: { type: String, default: null },
+      layout: { type: Schema.Types.Mixed, default: null },
+      // Diseñador solo-PDF (CR80): PDF de fondo original en Cloudinary.
+      pdf: { type: Schema.Types.Mixed, default: null },
+      // Elementos dinámicos por página del PDF: [{ elements: [...] }].
+      sides: { type: Schema.Types.Mixed, default: null },
+      updatedAt: { type: Date, default: null },
+    },
+    // Credential configuration: logos, text, and design settings
+    // used when rendering the credential templates.
+    credentialConfig: {
+      dgetLogoUrl: { type: String, default: null },
+      iheLogoUrl: { type: String, default: null },
+      watermarkUrl: { type: String, default: null },
+      directorName: { type: String, default: null, trim: true },
+      values: { type: String, default: null, trim: true },
+      city: { type: String, default: null, trim: true },
+      indications: { type: [String], default: [] },
+      // Logos reusables del diseñador CR80 (subidos vía
+      // /credential-template/logos, almacenados en Cloudinary). Mixed
+      // porque la whitelist exacta se aplica en el controller al leerlos.
+      logos: { type: Schema.Types.Mixed, default: null },
+    },
   },
   {
     timestamps: true,

@@ -64,7 +64,7 @@ const getAllTeacherSubjects = async (req, res, next) => {
     }
 
     const assignments = await TeacherSubject.find(filter)
-      .populate("teacher_id", "name email role phoneNumber")
+      .populate("teacher_id", "name last_name email role phoneNumber")
       .populate("subject_id", "code name")
       .populate("group_id", "grade section school_year_id shift")
       .populate("school_year_id", "name startDate endDate isActive")
@@ -874,12 +874,12 @@ const getMyGroups = async (req, res, next) => {
       const guardians = await Guardian.find({
         _id: { $in: uniqueGuardianIds },
         school: schoolId,
-      }).select("name relationship phone").lean();
+      }).select("name lastname relationship phone").lean();
 
       for (const guardian of guardians) {
         guardiansMap[String(guardian._id)] = {
           _id: guardian._id,
-          fullName: guardian.name,
+          fullName: [guardian.name, guardian.lastname].filter(Boolean).join(" "),
           relationship: guardian.relationship,
           phone: guardian.phone || null,
         };
@@ -2730,7 +2730,7 @@ const getGroupStudentsSummary = async (req, res, next) => {
       const guardians = await Guardian.find({
         _id: { $in: allGuardianIds },
         school: schoolId,
-      }).select("name relationship phone students").lean();
+      }).select("name lastname relationship phone students").lean();
 
       // Para cada alumno, tomar el primer tutor
       for (const student of studentsRaw) {
@@ -2739,7 +2739,7 @@ const getGroupStudentsSummary = async (req, res, next) => {
         if (found) {
           guardiansMap[String(student._id)] = {
             _id: found._id,
-            fullName: found.name,
+            fullName: [found.name, found.lastname].filter(Boolean).join(" "),
             relationship: found.relationship,
             phone: found.phone || null,
           };
@@ -2859,12 +2859,12 @@ const getStudentFile = async (req, res, next) => {
       const guardian = await Guardian.findOne({
         _id: studentDoc.guardians[0],
         school: schoolId,
-      }).select("name relationship phone").lean();
+      }).select("name lastname relationship phone").lean();
 
       if (guardian) {
         primaryGuardian = {
           _id: guardian._id,
-          fullName: guardian.name,
+          fullName: [guardian.name, guardian.lastname].filter(Boolean).join(" "),
           relationship: guardian.relationship,
           phone: guardian.phone || null,
         };

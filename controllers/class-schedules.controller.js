@@ -425,9 +425,140 @@ const deleteSchedule = async (req, res, next) => {
   }
 };
 
+// PUT /api/class-schedules/:scheduleId
+const updateSchedule = async (req, res, next) => {
+  try {
+    const { scheduleId } = req.params;
+
+    if (!mongoose.Types.ObjectId.isValid(scheduleId)) {
+      return res.status(404).json({ message: `No schedule with id: ${scheduleId}` });
+    }
+
+    const existing = await ClassSchedule.findOne({
+      _id: scheduleId,
+      ...tenantFilter(req),
+    });
+
+    if (!existing) {
+      return res.status(404).json({ message: `No schedule with id: ${scheduleId}` });
+    }
+
+    const isSuperAdmin = req.payload.role === "super_admin";
+    const payload = { ...req.body };
+    delete payload._id;
+
+    if (isSuperAdmin) {
+      if (!payload.school) {
+        return res.status(400).json({ message: "school is required in body for super_admin." });
+      }
+    } else {
+      payload.school = req.payload.schoolId;
+    }
+
+    if (payload.school_shift_id && mongoose.Types.ObjectId.isValid(payload.school_shift_id)) {
+      const shift = await SchoolShift.findOne({
+        _id: payload.school_shift_id,
+        ...tenantFilter(req),
+      });
+      if (!shift) {
+        return res.status(404).json({ message: "School shift not found." });
+      }
+
+      if (Array.isArray(payload.scheduleSlots)) {
+        for (const slot of payload.scheduleSlots) {
+          if (!Array.isArray(slot.timeBlockRefs) || slot.timeBlockRefs.length === 0) {
+            return res.status(400).json({
+              message: `Slot for day ${slot.dayOfWeek} must have at least one time block.`,
+            });
+          }
+          const blocks = shift.resolveBlocks(slot.timeBlockRefs);
+          const breakBlock = blocks.find((b) => b.isBreak);
+          if (breakBlock) {
+            return res.status(400).json({
+              message: `Time block "${breakBlock.name}" is a break and cannot be assigned.`,
+            });
+          }
+          if (!shift.areContiguous(slot.timeBlockRefs)) {
+            return res.status(400).json({
+              message: `Time blocks for day ${slot.dayOfWeek} must be contiguous.`,
+            });
+          }
+        }
+      }
+    }
+
+    if (payload.teacher_id && payload.school_shift_id && payload.scheduleSlots) {
+      const teacherBlockQuery = {
+        school: payload.school,
+        school_year_id: existing.school_year_id,
+        teacher_id: payload.teacher_id,
+        isActive: true,
+        _id: { $ne: scheduleId },
+      };
+      for (const slot of payload.scheduleSlots) {
+        const conflict = await ClassSchedule.findOne({
+          ...teacherBlockQuery,
+          scheduleSlots: {
+            $elemMatch: {
+              dayOfWeek: slot.dayOfWeek,
+              timeBlockRefs: { $in: slot.timeBlockRefs },
+            },
+          },
+        }).lean();
+        if (conflict) {
+          return res.status(409).json({
+            message: `Teacher conflict on day ${slot.dayOfWeek}: already assigned in another schedule.`,
+          });
+        }
+      }
+    }
+
+    if (payload.group_id && payload.school_shift_id && payload.scheduleSlots) {
+      const groupBlockQuery = {
+        school: payload.school,
+        school_year_id: existing.school_year_id,
+        group_id: payload.group_id,
+        isActive: true,
+        _id: { $ne: scheduleId },
+      };
+      for (const slot of payload.scheduleSlots) {
+        const conflict = await ClassSchedule.findOne({
+          ...groupBlockQuery,
+          scheduleSlots: {
+            $elemMatch: {
+              dayOfWeek: slot.dayOfWeek,
+              timeBlockRefs: { $in: slot.timeBlockRefs },
+            },
+          },
+        }).lean();
+        if (conflict) {
+          return res.status(409).json({
+            message: `Group conflict on day ${slot.dayOfWeek}: another subject is assigned at the same time.`,
+          });
+        }
+      }
+    }
+
+    const updated = await ClassSchedule.findByIdAndUpdate(
+      scheduleId,
+      { $set: payload },
+      { new: true, runValidators: true }
+    )
+      .populate("group_id", "grade section shift type")
+      .populate("subject_id", "code name color icon")
+      .populate("teacher_id", "name last_name")
+      .populate("school_shift_id", "name shift startTime endTime");
+
+    res.status(200).json(updated);
+  } catch (error) {
+    next(error);
+  }
+};
+
 module.exports = {
   getAllSchedules,
   createSchedule,
   bulkCreate,
+  updateSchedule,
   deleteSchedule,
 };

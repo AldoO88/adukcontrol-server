@@ -15,6 +15,32 @@ const Student = require("../models/Student.model");
 const Guardian = require("../models/Guardian.model");
 const whatsappService = require("../services/whatsapp.service");
 const { generateOtp } = require("../utils/otp");
+const refreshTokenService = require("../services/refresh-token.service");
+
+// TTL del access JWT. 15 min es el rango OWASP para apps con refresh.
+const ACCESS_TTL = "15m";
+const ACCESS_TTL_MS = 15 * 60 * 1000;
+
+// Helper para firmar el access JWT con el payload canónico (mismo
+// shape que ya consumía la web/móvil). Centralizarlo evita
+// inconsistencias (antes había 30m en login/activate y 8h en signup).
+//
+// `_jti` se incluye para que tokens consecutivos firmados dentro del
+// mismo segundo sean distinguibles (JSONWebToken emite `iat`/`exp`
+// en segundos, así que dos signs en el mismo tick serían idénticos).
+const signAccessToken = (user) =>
+  jwt.sign(
+    {
+      _id: user._id,
+      email: user.email,
+      name: user.name,
+      role: user.role,
+      schoolId: user.school ? user.school._id || user.school : null,
+      _jti: crypto.randomUUID(),
+    },
+    process.env.SECRET_KEY,
+    { algorithm: "HS256", expiresIn: ACCESS_TTL }
+  );
 
 // Cookie options para HttpOnly. Se setea en login/signup/activate.
 // En desarrollo secure:false (HTTP). En producción secure:true (HTTPS).
@@ -227,6 +253,7 @@ const signupController = async (req, res, next) => {
         school,
         user_id: createdUser._id,
         name: guardian_profile.name,
+        lastname: (guardian_profile.lastname || "").trim(),
         relationship: guardian_profile.relationship,
         phone: phoneNumber.trim(),
         students: validStudentIds,
@@ -244,26 +271,33 @@ const signupController = async (req, res, next) => {
     }
 
     // === Firmar JWT y responder ===
-    const authToken = jwt.sign(
-      {
-        _id: createdUser._id,
-        email: createdUser.email,
-        name: createdUser.name,
-        role: createdUser.role,
-        schoolId: createdUser.school,
-      },
-      process.env.SECRET_KEY,
-      { algorithm: "HS256", expiresIn: "8h" }
-    );
+    // `createdUser.school` aquí es un ObjectId (recién seteado en el
+    // signup). `signAccessToken` acepta school como id o doc poblado.
+    const authToken = signAccessToken(createdUser);
 
     // Setea la cookie HttpOnly ANTES de res.json() (los headers ya se envían después)
-    setAuthCookie(res, authToken, 8 * 60 * 60 * 1000);
+    setAuthCookie(res, authToken, ACCESS_TTL_MS);
+
+    // Refresh token. En signup no hay checkbox todavía: por default
+    // remember=false (TTL 24 h). La web (sin checkbox) lo promueve a
+    // true como en login.
+    const remember = req.body?.remember !== undefined
+      ? !!req.body.remember
+      : req.body?.client === "web";
+    const client = req.body?.client === "app" ? "app" : "web";
+    const refresh = await refreshTokenService.issueRefreshToken({
+      user: createdUser,
+      school: createdUser.school,
+      client,
+      remember,
+    });
 
     res.status(201).json({
       message: "User created successfully",
       user: buildAuthResponse(createdUser),
       guardian: createdGuardian, // null si no es tutor
       authToken,
+      refreshToken: refresh.raw,
     });
   } catch (error) {
     next(error);
@@ -334,24 +368,33 @@ const loginController = async (req, res, next) => {
         .json({ message: "Your school is inactive. Contact support." });
     }
 
-    const authToken = jwt.sign(
-      {
-        _id: foundUser._id,
-        email: foundUser.email,
-        name: foundUser.name,
-        role: foundUser.role,
-        schoolId: foundUser.school ? foundUser.school._id : null,
-      },
-      process.env.SECRET_KEY,
-      { algorithm: "HS256", expiresIn: "30m" }
-    );
+    const authToken = signAccessToken(foundUser);
 
     // Setea la cookie HttpOnly ANTES de res.json()
-    setAuthCookie(res, authToken, 30 * 60 * 1000);
+    setAuthCookie(res, authToken, ACCESS_TTL_MS);
+
+    // Refresh token. La web siempre marca "remember=true" (no hay
+    // checkbox). La app móvil decide según el checkbox "Recordar mi
+    // sesión". El default (false) = 24 h; el cliente no persistirá el
+    // refresh, así que la sesión quedará atada al access (15 min).
+    const remember = req.body?.remember !== undefined
+      ? !!req.body.remember
+      : req.body?.client === "web" // web sin checkbox → recordar siempre
+        ? true
+        : false;
+    const client = req.body?.client === "app" ? "app" : "web";
+
+    const refresh = await refreshTokenService.issueRefreshToken({
+      user: foundUser,
+      school: foundUser.school,
+      client,
+      remember,
+    });
 
     res.status(200).json({
       user: buildAuthResponse(foundUser),
       authToken,
+      refreshToken: refresh.raw,
     });
   } catch (error) {
     next(error);
@@ -359,11 +402,22 @@ const loginController = async (req, res, next) => {
 };
 
 // POST /auth/logout
-// Limpia la cookie HttpOnly. Stateless: no invalida el JWT en el server
-// (el cliente debe además descartar el token que tenga en memoria).
-const logoutController = (req, res) => {
-  res.clearCookie(COOKIE_NAME, getCookieOptions(0));
-  res.status(200).json({ message: "Logged out." });
+// Limpia la cookie HttpOnly Y, si el cliente envía el refreshToken en
+// el body, lo revoca en la DB. El access JWT sigue siendo válido
+// hasta `exp` (≤ 15 min) — aceptable dado el TTL corto; en logout
+// el cliente también descarta su access en localStorage/SecureStore,
+// así que no hay ventana significativa de uso indebido.
+const logoutController = async (req, res, next) => {
+  try {
+    const refreshRaw = req.body?.refreshToken || req.cookies?.refreshToken;
+    if (refreshRaw) {
+      await refreshTokenService.revokeRefreshToken(refreshRaw);
+    }
+    res.clearCookie(COOKIE_NAME, getCookieOptions(0));
+    res.status(200).json({ message: "Logged out." });
+  } catch (error) {
+    next(error);
+  }
 };
 
 // POST /auth/request-activation
@@ -578,25 +632,31 @@ const activateAccountController = async (req, res, next) => {
     user.isActive = true;
     await user.save();
 
-    const authToken = jwt.sign(
-      {
-        _id: user._id,
-        email: user.email,
-        name: user.name,
-        role: user.role,
-        schoolId: user.school ? user.school._id : null,
-      },
-      process.env.SECRET_KEY,
-      { algorithm: "HS256", expiresIn: "30m" }
-    );
+    const authToken = signAccessToken(user);
 
     // Setea la cookie HttpOnly ANTES de res.json()
-    setAuthCookie(res, authToken, 30 * 60 * 1000);
+    setAuthCookie(res, authToken, ACCESS_TTL_MS);
+
+    // Refresh token de la activación: la activación inicia sesión sin
+    // paso de "recordar mi sesión" (no hay UI todavía). Si el cliente
+    // viene de la app, podemos pasar `remember` en el body. Default:
+    // false (24 h); web (sin body) se promueve a true.
+    const remember = req.body?.remember !== undefined
+      ? !!req.body.remember
+      : req.body?.client === "web";
+    const client = req.body?.client === "app" ? "app" : "web";
+    const refresh = await refreshTokenService.issueRefreshToken({
+      user,
+      school: user.school,
+      client,
+      remember,
+    });
 
     res.status(200).json({
       message: "Account activated successfully.",
       user: buildAuthResponse(user),
       authToken,
+      refreshToken: refresh.raw,
     });
   } catch (error) {
     next(error);
@@ -607,6 +667,52 @@ const activateAccountController = async (req, res, next) => {
 const verifyController = (req, res, next) => {
   try {
     res.status(200).json({ user: req.payload });
+  } catch (error) {
+    next(error);
+  }
+};
+
+// POST /auth/refresh
+// Rota el refresh token: si la DB lo reconoce, no está expirado y no
+// fue reusado, devuelve un access JWT nuevo + un nuevo refresh
+// (rotación). Sobre reuso: revoke toda la family y devuelve 401.
+//
+// Rate limit recomendado a nivel de router (no incluido aquí para
+// mantener el controller simple) — ver routes/auth.routes.js.
+const refreshController = async (req, res, next) => {
+  try {
+    const raw = req.body?.refreshToken || req.cookies?.refreshToken;
+    if (!raw) {
+      return res.status(400).json({ message: "refreshToken is required." });
+    }
+    let rotated;
+    try {
+      rotated = await refreshTokenService.rotateRefreshToken(raw);
+    } catch (err) {
+      if (err && err.name === "RefreshError") {
+        return res
+          .status(err.httpStatus || 401)
+          .json({ message: err.message, reason: err.reason });
+      }
+      throw err;
+    }
+    // Para firmar el nuevo access, necesitamos el user. Hacemos un
+    // lookup por el id que arrastró rotateRefreshToken en `rotated`.
+    const User = require("../models/User.model");
+    const user = await User.findById(rotated.user);
+    if (!user) {
+      // Inconsistencia: el refresh apunta a un user borrado.
+      await refreshTokenService.revokeAllForUser(rotated.user);
+      return res.status(401).json({ message: "Session invalid." });
+    }
+    const authToken = signAccessToken({
+      ...user.toObject(),
+      school: user.school,
+    });
+    res.status(200).json({
+      authToken,
+      refreshToken: rotated.raw,
+    });
   } catch (error) {
     next(error);
   }
@@ -982,6 +1088,7 @@ module.exports = {
   verifyOtpController,
   activateAccountController,
   verifyController,
+  refreshController,
   registerStaffFcmToken,
   changePasswordController,
   requestPasswordReset,

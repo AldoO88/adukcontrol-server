@@ -27,7 +27,12 @@ const syncStudentCurrentGroup = async (studentId, groupId, schoolYearId, schoolI
     .lean();
   if (!school) return;
   if (String(school.current_school_year_id) !== String(schoolYearId)) return;
-  await Student.findByIdAndUpdate(studentId, { current_group_id: groupId });
+  // Use findOne + save() to trigger pre-save hooks (e.g. controlNumber generation)
+  const student = await Student.findOne({ _id: studentId, school: schoolId });
+  if (!student) return;
+  if (String(student.current_group_id) === String(groupId)) return;
+  student.current_group_id = groupId;
+  await student.save();
 };
 
 // GET /api/enrollments
@@ -50,7 +55,7 @@ const getAllEnrollments = async (req, res, next) => {
     const enrollments = await Enrollment.find(filter)
       .populate({
         path: "student_id",
-        select: "controlNumber first_name last_name sex phone workshop_group_id status",
+        select: "controlNumber first_name last_name sex phone photoUrl rfid_card biometricId isFaceEnrolled workshop_group_id status",
         populate: { path: "workshop_group_id", select: "grade section type" },
       })
       .populate("group_id", "grade section school_year_id shift type")
@@ -113,7 +118,7 @@ const getEnrollmentById = async (req, res, next) => {
     })
       .populate({
         path: "student_id",
-        select: "controlNumber first_name last_name sex phone workshop_group_id status",
+        select: "controlNumber first_name last_name sex phone photoUrl rfid_card biometricId isFaceEnrolled workshop_group_id status",
         populate: { path: "workshop_group_id", select: "grade section type" },
       })
       .populate("group_id", "grade section school_year_id shift type")
@@ -167,6 +172,14 @@ const updateEnrollment = async (req, res, next) => {
         updated.group_id,
         updated.school_year_id,
         updated.school
+      );
+    }
+
+    // Si se dio de baja, limpiar current_group_id del alumno
+    if (req.body.cycle_status === "withdrawn") {
+      await Student.findOneAndUpdate(
+        { _id: updated.student_id },
+        { $set: { current_group_id: null } }
       );
     }
 

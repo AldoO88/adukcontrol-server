@@ -449,39 +449,22 @@ const studentSchema = new Schema(
 // masiva, migrar a una colección `Counter` con `findOneAndUpdate + $inc`
 // atómico.
 studentSchema.pre("save", async function (next) {
-  // Solo en creación; los updates NO regeneran el número.
-  if (!this.isNew) return next();
-  // Si ya viene seteado (e.g. seed/migración), respetarlo.
+  // Si ya tiene controlNumber, no regenerar.
   if (this.controlNumber) return next();
-
-  // Si falta algún insumo crítico, dejamos que los validators devuelvan
-  // un 400 claro en vez de inventar un número.
+  // Si no tiene school o current_group_id, no generar (pendiente de asignar grupo).
   if (!this.school || !this.current_group_id) return next();
 
   try {
     // 1) Resolver Group + School + SchoolYear en paralelo.
     //    Todos filtran por la escuela del documento (anti cross-tenant leak).
-    const [group, schoolDoc, schoolYearDoc] = await Promise.all([
+    const [group, schoolDoc] = await Promise.all([
       Group.findOne({
         _id: this.current_group_id,
         school: this.school,
       })
-        .select("shift school_year_id school")
+        .select("shift grade school")
         .lean(),
       School.findOne({ _id: this.school }).select("cct").lean(),
-      // SchoolYear se filtra por el school_year_id del Group, que se
-      // carga arriba. Si el Group lo trae, lo encontramos; si no, fallback
-      // al año calendario más abajo.
-      Group.findOne({ _id: this.current_group_id, school: this.school })
-        .select("school_year_id")
-        .lean()
-        .then((g) =>
-          g && g.school_year_id
-            ? SchoolYear.findOne({ _id: g.school_year_id })
-                .select("startDate")
-                .lean()
-            : null
-        ),
     ]);
 
     if (!group) {
@@ -522,15 +505,12 @@ studentSchema.pre("save", async function (next) {
       );
     }
 
-    // 4) Año de inscripción: año de inicio del SchoolYear si está
-    //    disponible; si no, año calendario (defensivo).
-    let yy;
-    if (schoolYearDoc && schoolYearDoc.startDate) {
-      yy = String(new Date(schoolYearDoc.startDate).getFullYear()).slice(-2);
-    }
-    if (!yy) {
-      yy = String(new Date().getFullYear()).slice(-2);
-    }
+    // 4) Año de ingreso del alumno: año actual - (grado - 1)
+    //    1° grado (nuevo): 2026 - 0 = 2026 → "26"
+    //    2° grado (transfer): 2026 - 1 = 2025 → "25"
+    //    3° grado (transfer): 2026 - 2 = 2024 → "24"
+    const currentYear = new Date().getFullYear();
+    const yy = String(currentYear - (group.grade - 1)).slice(-2);
 
     // 5) Componer el prefijo (7 chars) y armar el controlNumber (10 chars).
     const prefix = `${yy}${shiftDigit}${cct4}`;

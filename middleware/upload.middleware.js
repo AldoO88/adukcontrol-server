@@ -26,6 +26,11 @@ const ALLOWED_MIME_TYPES = [
 const MAX_FILE_SIZE_BYTES = 5 * 1024 * 1024; // 5 MB
 const MAX_FILE_SIZE_LABEL = "5MB";
 
+// PDF del designer de credenciales (fondo original, hasta 10 MB).
+const PDF_ALLOWED_MIME_TYPES = ["application/pdf"];
+const PDF_MAX_FILE_SIZE_BYTES = 10 * 1024 * 1024; // 10 MB
+const PDF_MAX_FILE_SIZE_LABEL = "10MB";
+
 // Filtro: solo imágenes permitidas
 const imageFileFilter = (req, file, cb) => {
   if (ALLOWED_MIME_TYPES.includes(file.mimetype)) {
@@ -59,6 +64,37 @@ const uploadSingle = (fieldName = "photo") => {
   return (req, res, next) => {
     mw(req, res, (err) => {
       if (!err) return next();
+      return handleMulterError(err, req, res, next);
+    });
+  };
+};
+
+// Single file PDF (campo "background" por defecto) — template de credenciales.
+const pdfMulterInstance = multer({
+  storage,
+  fileFilter: (req, file, cb) => {
+    if (PDF_ALLOWED_MIME_TYPES.includes(file.mimetype)) {
+      return cb(null, true);
+    }
+    const err = new Error(
+      `Invalid file type. Allowed: ${PDF_ALLOWED_MIME_TYPES.join(", ")}.`
+    );
+    err.code = "INVALID_FILE_TYPE";
+    cb(err, false);
+  },
+  limits: { fileSize: PDF_MAX_FILE_SIZE_BYTES, files: 1 },
+});
+
+const uploadPdfSingle = (fieldName = "background") => {
+  const mw = pdfMulterInstance.single(fieldName);
+  return (req, res, next) => {
+    mw(req, res, (err) => {
+      if (!err) return next();
+      if (err instanceof multer.MulterError && err.code === "LIMIT_FILE_SIZE") {
+        return res.status(413).json({
+          message: `File too large. Maximum size is ${PDF_MAX_FILE_SIZE_LABEL}.`,
+        });
+      }
       return handleMulterError(err, req, res, next);
     });
   };
@@ -103,9 +139,13 @@ const handleMulterError = (err, req, res, next) => {
 module.exports = {
   upload,
   uploadSingle,
+  uploadPdfSingle,
   uploadArray,
   handleMulterError,
   ALLOWED_MIME_TYPES,
+  PDF_ALLOWED_MIME_TYPES,
   MAX_FILE_SIZE_BYTES,
   MAX_FILE_SIZE_LABEL,
+  PDF_MAX_FILE_SIZE_BYTES,
+  PDF_MAX_FILE_SIZE_LABEL,
 };

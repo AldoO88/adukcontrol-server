@@ -18,6 +18,7 @@ const SchoolShift = require("../models/SchoolShift.model");
 const Subject = require("../models/Subject.model");
 const cache = require("../services/cache.service");
 const notificationService = require("../services/notification.service");
+const { ensureTutorUser } = require("../services/tutor-account.service");
 const {
   getConductConfig,
   clampScore,
@@ -74,7 +75,7 @@ const getAllGuardians = async (req, res, next) => {
         safe.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"),
         "i"
       );
-      filter.$or = [{ name: regex }, { phone: regex }];
+      filter.$or = [{ name: regex }, { lastname: regex }, { phone: regex }];
     }
 
     const skip = (pageNum - 1) * limitNum;
@@ -116,10 +117,27 @@ const getMyGuardians = async (req, res, next) => {
 
 // POST /api/guardians
 // Crea un tutor. Solo admin/registrar/super_admin.
-// Body: { name, phone, relationship, school?, user_id?, students? }
+//
+// Body: { name, lastname?, phone, relationship, school?, user_id?, students? }
+//
+// Garantías de este endpoint:
+//   - Si ya existe un Guardian con el mismo `{school, phone}` (otro
+//     hijo del mismo papá), lo REUSA y solo le suma el nuevo
+//     `students` al array existente. Esto evita chocar con el índice
+//     único `{school, phone}` cuando se registran hermanos.
+//   - Tras crear/reusar, intenta vincular/crear un User tutor
+//     (`ensureTutorUser`). Si el celular ya está registrado con otro
+//     perfil (teacher/admin/etc), el Guardian queda creado pero el
+//     padre no podrá activarse con ese número → devolvemos
+//     `{ warning: "Teléfono ya registrado" }` en la respuesta 201
+//     para que el frontend lo muestre.
+//   - El opt-in de WhatsApp queda en `true` (source `admin_form`)
+//     porque la escuela ya capturó el dato del papá; sin opt-in el
+//     flujo de activación devolvería 451. El webhook STOP de Twilio
+//     sigue siendo la vía de baja.
 const createGuardian = async (req, res, next) => {
   try {
-    const { name, phone, relationship, user_id, students, whatsapp_opt_in } = req.body;
+    const { name, lastname, phone, relationship, user_id, students } = req.body;
 
     if (!name || !phone || !relationship) {
       return res
@@ -138,7 +156,7 @@ const createGuardian = async (req, res, next) => {
         .json({ message: "school is required (provide it in body for super_admin)." });
     }
 
-    // Validar user_id si se pasa
+    // Validar user_id si se pasa (vía signup u otro flujo).
     if (user_id) {
       if (!mongoose.Types.ObjectId.isValid(user_id)) {
         return res.status(400).json({ message: "Invalid user_id." });
@@ -159,58 +177,116 @@ const createGuardian = async (req, res, next) => {
       }
     }
 
-    // Opt-in WhatsApp: si el admin lo activa al crear el tutor, grabamos
-    // timestamp + source para auditoría. Si no viene o es false, queda
-    // opted_in=false (el tutor lo activa después vía profile si quiere).
-    const notificationPrefs = {};
-    if (whatsapp_opt_in === true || whatsapp_opt_in === "true") {
-      notificationPrefs.whatsapp = {
-        opted_in: true,
-        opted_in_at: new Date(),
-        source: "admin_form",
-      };
-    }
-
-    const newGuardian = await Guardian.create({
-      school,
-      name,
-      phone,
-      relationship,
-      user_id: user_id || null,
-      students: validStudents,
-      ...(Object.keys(notificationPrefs).length > 0
-        ? { notification_prefs: notificationPrefs }
-        : {}),
-    });
-
-    // Si tiene user_id, sincronizar el opt-in también en User (best-effort).
-    if (user_id && notificationPrefs.whatsapp) {
-      try {
-        await User.updateOne(
-          { _id: user_id },
-          {
-            $set: {
-              "notification_prefs.whatsapp": notificationPrefs.whatsapp,
-            },
-          }
+    // --------------------------------------------------------
+    // REUSO / CREACIÓN DEL GUARDIAN
+    // --------------------------------------------------------
+    // El índice único `{school, phone}` impide tener 2 Guardians
+    // con el mismo celular en la misma escuela. Si llegamos aquí
+    // registrando un nuevo alumno y el papá ya tiene Guardian
+    // (p.ej. hermano mayor), reusamos el mismo y le sumamos el
+    // nuevo student.
+    let guardian = await Guardian.findOne({ school, phone });
+    let reused = false;
+    if (guardian) {
+      reused = true;
+      // Sincronizamos los campos "editables" (nombre/apellido/
+      // parentesco) por si el admin los actualizó desde la UI;
+      // nunca pisamos `user_id` ni `notification_prefs` del existente.
+      const hasChanges =
+        (lastname && lastname.trim() && lastname.trim() !== guardian.lastname) ||
+        (relationship && relationship.trim() !== guardian.relationship) ||
+        (name && name.trim() !== guardian.name);
+      if (hasChanges) {
+        if (name) guardian.name = name;
+        if (lastname && lastname.trim()) guardian.lastname = lastname.trim();
+        if (relationship) guardian.relationship = relationship;
+        await guardian.save();
+      }
+      if (validStudents.length > 0) {
+        // Suma el nuevo student al array del Guardian (mirror del
+        // lado Student.guardians) y también a los Students (para
+        // que `Student.populate("guardians")` lo muestre).
+        await Guardian.updateOne(
+          { _id: guardian._id },
+          { $addToSet: { students: { $each: validStudents } } }
         );
-      } catch (syncErr) {
-        console.warn(
-          "[createGuardian] Failed to sync User notification_prefs:",
-          syncErr.message
+        await Student.updateMany(
+          { _id: { $in: validStudents } },
+          { $addToSet: { guardians: guardian._id } }
+        );
+        guardian = await Guardian.findById(guardian._id);
+      }
+    } else {
+      guardian = await Guardian.create({
+        school,
+        name,
+        lastname: lastname && lastname.trim() ? lastname.trim() : "",
+        phone,
+        relationship,
+        user_id: user_id || null,
+        students: validStudents,
+        notification_prefs: {
+          whatsapp: {
+            opted_in: true,
+            opted_in_at: new Date(),
+            source: "admin_form",
+          },
+        },
+      });
+
+      if (validStudents.length > 0) {
+        await Student.updateMany(
+          { _id: { $in: validStudents } },
+          { $addToSet: { guardians: guardian._id } }
         );
       }
     }
 
-    // Si tiene students, agregar este guardian al array guardians de cada Student
-    if (validStudents.length > 0) {
-      await Student.updateMany(
-        { _id: { $in: validStudents } },
-        { $addToSet: { guardians: newGuardian._id } }
-      );
+    // --------------------------------------------------------
+    // SYNC A USER (activación con OTP desde login)
+    // --------------------------------------------------------
+    const tutorResult = await ensureTutorUser({
+      school,
+      name: guardian.name,
+      lastname: guardian.lastname,
+      phone: guardian.phone,
+    });
+
+    let warning = null;
+    if (tutorResult.ok) {
+      // Vincular User al Guardian (idempotente).
+      if (
+        guardian.user_id?.toString() !== tutorResult.user._id.toString()
+      ) {
+        guardian.user_id = tutorResult.user._id;
+        await guardian.save();
+      }
+      // Heredamos el opt-in al Guardian también (por si se creó
+      // primero el Guardian sin opt-in explícito).
+      if (!guardian.notification_prefs?.whatsapp?.opted_in) {
+        await Guardian.updateOne(
+          { _id: guardian._id },
+          {
+            $set: {
+              "notification_prefs.whatsapp": {
+                opted_in: true,
+                opted_in_at: new Date(),
+                source: "admin_form",
+              },
+            },
+          }
+        );
+      }
+    } else if (tutorResult.reason === "phone_taken") {
+      warning = tutorResult.message; // "Teléfono ya registrado"
+    } else if (tutorResult.reason === "missing_args") {
+      // No debería pasar (validamos antes), pero por seguridad:
+      warning = "No se pudo crear la cuenta del tutor";
     }
 
-    res.status(201).json(newGuardian);
+    const status = reused ? 200 : 201;
+    const payload = guardian.toObject();
+    res.status(status).json(warning ? { ...payload, warning } : payload);
   } catch (error) {
     next(error);
   }

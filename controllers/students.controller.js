@@ -129,6 +129,7 @@ const getAllStudents = async (req, res, next) => {
       status,
       group,
       search,
+      school_year_id,
       sort = "last_name",
       order = "asc",
     } = req.query;
@@ -141,6 +142,17 @@ const getAllStudents = async (req, res, next) => {
     if (status) filter.status = status;
     if (group && mongoose.Types.ObjectId.isValid(group)) {
       filter.current_group_id = group;
+    }
+    // school_year_id → alumnos inscritos ("enrolled") en ese ciclo.
+    // Bajas/translados/graduados del ciclo quedan fuera; sin el parámetro
+    // el comportamiento es idéntico al histórico.
+    if (school_year_id && mongoose.Types.ObjectId.isValid(school_year_id)) {
+      const enrolledIds = await Enrollment.distinct("student_id", {
+        ...tenantFilter(req),
+        school_year_id,
+        cycle_status: "enrolled",
+      });
+      filter._id = { $in: enrolledIds };
     }
     if (search) {
       const safe = String(search).trim();
@@ -196,7 +208,7 @@ const getStudentById = async (req, res, next) => {
       ...tenantFilter(req),
     })
       .populate("current_group_id", "grade section school_year_id head_teacher_id")
-      .populate("guardians", "name relationship phone");
+      .populate("guardians", "name lastname relationship phone");
 
     if (!student) {
       return res.status(404).json({ message: `No student with id: ${studentId}` });
@@ -264,6 +276,16 @@ const updateStudent = async (req, res, next) => {
     // Evitar que un usuario regular cambie el school (extra safety)
     if (req.payload.role !== "super_admin" && isChangingSchool) {
       delete req.body.school;
+    }
+
+    // Validar: isFaceEnrolled requiere biometricId
+    if (req.body.isFaceEnrolled === true) {
+      const bioId = req.body.biometricId !== undefined ? req.body.biometricId : currentStudent.biometricId;
+      if (!bioId) {
+        return res.status(400).json({
+          message: "Se requiere un ID Biométrico para activar el reconocimiento facial.",
+        });
+      }
     }
 
     const updated = await Student.findOneAndUpdate(
@@ -385,7 +407,6 @@ const uploadStudentPhoto = async (req, res, next) => {
           width: 300,
           height: 300,
           crop: "fill",
-          gravity: "face",
           quality: "auto",
           fetch_format: "webp",
         },
@@ -1079,11 +1100,12 @@ const updateStudentHealth = async (req, res, next) => {
 // Import students from Excel/CSV. Creates students + enrollments.
 const XLSX = require("xlsx");
 const Guardian = require("../models/Guardian.model");
+const { ensureTutorUser } = require("../services/tutor-account.service");
 
 const importStudentsFromSpreadsheet = async (req, res, next) => {
   try {
     if (!req.file || !req.file.buffer) {
-      return res.status(400).json({ message: "Excel file is required." });
+      return res.status(400).json({ message: "El archivo Excel es requerido." });
     }
 
     const { school_year_id, school: schoolBody } = req.body || {};
@@ -1091,26 +1113,26 @@ const importStudentsFromSpreadsheet = async (req, res, next) => {
     const school = isSuperAdmin ? schoolBody : req.payload.schoolId;
 
     if (!school) {
-      return res.status(400).json({ message: "school is required (super_admin must pass it in body)." });
+      return res.status(400).json({ message: "school es requerido (super_admin debe enviarlo en el body)." });
     }
 
     if (!school_year_id || !mongoose.Types.ObjectId.isValid(school_year_id)) {
-      return res.status(400).json({ message: "Valid school_year_id is required." });
+      return res.status(400).json({ message: "school_year_id valido es requerido." });
     }
 
     let workbook;
     try {
       workbook = XLSX.read(req.file.buffer, { type: "buffer" });
     } catch (err) {
-      return res.status(400).json({ message: `Invalid spreadsheet: ${err.message}` });
+      return res.status(400).json({ message: `Archivo invalido: ${err.message}` });
     }
 
     const sheetName = workbook.SheetNames[0];
-    if (!sheetName) return res.status(400).json({ message: "Spreadsheet has no sheets." });
+    if (!sheetName) return res.status(400).json({ message: "El archivo no tiene hojas." });
 
     const rows = XLSX.utils.sheet_to_json(workbook.Sheets[sheetName], { defval: "" });
-    if (rows.length === 0) return res.status(400).json({ message: "Spreadsheet has no data rows." });
-    if (rows.length > 500) return res.status(400).json({ message: "Maximum 500 rows per import." });
+    if (rows.length === 0) return res.status(400).json({ message: "El archivo no tiene datos." });
+    if (rows.length > 500) return res.status(400).json({ message: "Maximo 500 registros por importacion." });
 
     const normalizeKey = (s) => String(s || "").toLowerCase().trim().replace(/[^a-z0-9]/g, "");
     const rowKeyMap = (row) => {
@@ -1129,50 +1151,182 @@ const importStudentsFromSpreadsheet = async (req, res, next) => {
     for (let i = 0; i < rows.length; i++) {
       const keys = rowKeyMap(rows[i]);
       const curp = String(keys.curp || "").trim().toUpperCase();
-      const firstName = String(keys.firstname || keys.first_name || "").trim();
-      const lastName = String(keys.lastname || keys.last_name || "").trim();
-      const group = String(keys.group || "").trim().toUpperCase();
+      const firstName = String(keys.nombre || keys.firstname || keys.first_name || "").trim();
+      const lastName = String(keys.apellido || keys.lastname || keys.last_name || "").trim();
+      const group = String(keys.grupo || keys.group || "").trim().toUpperCase();
 
-      if (!curp || curp.length !== 18) { results.push({ index: i, status: "error", errors: ["CURP required (18 chars)"] }); continue; }
-      if (!firstName) { results.push({ index: i, status: "error", curp, errors: ["first_name required"] }); continue; }
+      if (!curp || curp.length !== 18) { results.push({ index: i, status: "error", errors: ["CURP requerida (18 caracteres)"] }); continue; }
+      if (!firstName) { results.push({ index: i, status: "error", curp, errors: ["nombre requerido"] }); continue; }
+      if (!lastName) { results.push({ index: i, status: "error", curp, errors: ["apellido requerido"] }); continue; }
 
       const groupId = group ? groupByLabel.get(group) : null;
-      if (group && !groupId) { results.push({ index: i, status: "error", curp, group, errors: [`Group "${group}" not found`] }); continue; }
+      if (group && !groupId) { results.push({ index: i, status: "error", curp, group, errors: [`Grupo "${group}" no encontrado`] }); continue; }
+
+      // Heurística de nombres del tutor (cuando no viene
+      // `tutor_apellido`): separar la 1ª palabra (nombres) del
+      // resto (apellidos). Con un solo token, apellido queda ""
+      // y `ensureTutorUser` usará el nombre como fallback de
+      // `User.last_name` para no romper el `required` del modelo.
+      const guardianNameRaw = String(keys.tutornombre || keys.guardianname || keys.guardian_name || "").trim();
+      const guardianLastNameRaw = String(keys.tutorapellido || keys.guardianlastname || keys.guardian_last_name || keys.lastnametutor || "").trim();
+      let guardianName = null;
+      let guardianLastName = null;
+      if (guardianNameRaw) {
+        const parts = guardianNameRaw.split(/\s+/).filter(Boolean);
+        guardianName = parts.length > 0 ? parts[0] : null;
+        guardianLastName = guardianLastNameRaw
+          ? guardianLastNameRaw
+          : (parts.length > 1 ? parts.slice(1).join(" ") : "");
+      }
 
       toCreate.push({
         index: i, curp, firstName, lastName, groupId,
-        sex: String(keys.sex || "").trim() || null,
-        phone: String(keys.phone || "").trim() || null,
-        address: String(keys.address || "").trim() || null,
-        dateOfBirth: String(keys.dateofbirth || keys.date_of_birth || "").trim() || null,
-        bloodType: String(keys.bloodtype || keys.blood_type || "").trim() || null,
-        guardianName: String(keys.guardianname || keys.guardian_name || "").trim() || null,
-        guardianPhone: String(keys.guardianphone || keys.guardian_phone || "").trim() || null,
-        guardianRelationship: String(keys.guardianrelationship || keys.guardian_relationship || "").trim() || "tutor legal",
+        sex: String(keys.sexo || keys.sex || "").trim() || null,
+        phone: String(keys.telefono || keys.phone || "").trim() || null,
+        address: String(keys.direccion || keys.address || "").trim() || null,
+        dateOfBirth: String(keys.fechanacimiento || keys.dateofbirth || keys.date_of_birth || "").trim() || null,
+        bloodType: String(keys.tiposangre || keys.bloodtype || keys.blood_type || "").trim() || null,
+        // Tutor: aceptamos apellido en columna separada
+        // (`tutor_apellido` / `guardian_last_name`). Si no viene,
+        // partimos el nombre completo: 1ª palabra → nombres, resto
+        // → apellidos (convención MX: paternal y maternal en
+        // `lastname`). Si solo hay una palabra, el apellido queda
+        // vacío y `ensureTutorUser` hace fallback al nombre.
+        guardianName,
+        guardianLastName,
+        guardianPhone: String(keys.tutortelefono || keys.guardianphone || keys.guardian_phone || "").trim() || null,
+        guardianRelationship: String(keys.tutorparentesco || keys.guardianrelationship || keys.guardian_relationship || "").trim() || "tutor legal",
       });
     }
 
     const created = [];
+    const warnings = [];
     for (const item of toCreate) {
       try {
         const existing = await Student.findOne({ school, curp: item.curp });
-        if (existing) { results.push({ index: item.index, status: "error", curp: item.curp, errors: ["CURP already exists"] }); continue; }
+        if (existing) { results.push({ index: item.index, status: "error", curp: item.curp, errors: ["CURP ya existe"] }); continue; }
 
+        // Convert M/F to male/female
+        let sex = null;
+        const sexRaw = String(item.sex || "").trim().toUpperCase();
+        if (sexRaw === "M" || sexRaw === "MASCULINO") sex = "male";
+        else if (sexRaw === "F" || sexRaw === "FEMENINO") sex = "female";
+
+        // Create student with current_group_id so pre-save generates controlNumber
         const student = await Student.create({
           school, curp: item.curp, first_name: item.firstName, last_name: item.lastName,
-          sex: item.sex || undefined, phone: item.phone || undefined, address: item.address || undefined,
+          sex, phone: item.phone || undefined, address: item.address || undefined,
           date_of_birth: item.dateOfBirth || undefined, blood_type: item.bloodType || undefined,
+          current_group_id: item.groupId || null,
         });
 
+        let guardian = null;
         if (item.guardianName && item.guardianPhone) {
-          try {
-            const guardian = await Guardian.create({
-              school, name: item.guardianName, phone: item.guardianPhone,
-              relationship: item.guardianRelationship, students: [student._id],
-            });
-            student.guardians = [guardian._id];
+          // --------------------------------------------------------
+          // Reuso de hermanos: si ya existe un Guardian con el mismo
+          // {school, phone}, no chocar con el índice único y solo
+          // sumarle el nuevo student.
+          // --------------------------------------------------------
+          const existingGuardian = await Guardian.findOne({ school, phone: item.guardianPhone });
+          if (existingGuardian) {
+            guardian = existingGuardian;
+            // Sincronizamos los campos editables (nombre/apellido)
+            // si difieren (útil si el admin corrije el Excel).
+            let dirty = false;
+            if (
+              item.guardianName &&
+              item.guardianName.trim() !== guardian.name
+            ) {
+              guardian.name = item.guardianName.trim();
+              dirty = true;
+            }
+            if (
+              item.guardianLastName !== undefined &&
+              (item.guardianLastName || "") !== (guardian.lastname || "")
+            ) {
+              guardian.lastname = item.guardianLastName || "";
+              dirty = true;
+            }
+            if (dirty) await guardian.save();
+          } else {
+            try {
+              guardian = await Guardian.create({
+                school,
+                name: item.guardianName,
+                lastname: item.guardianLastName || "",
+                phone: item.guardianPhone,
+                relationship: item.guardianRelationship,
+                students: [student._id],
+                notification_prefs: {
+                  whatsapp: {
+                    opted_in: true,
+                    opted_in_at: new Date(),
+                    source: "imported_seed",
+                  },
+                },
+              });
+            } catch (gErr) {
+              // Si falla (índice único, schema, etc), reportamos el
+              // warning en vez de tragarlo silenciosamente como
+              // antes. El alumno se conserva igualmente.
+              warnings.push({
+                index: item.index,
+                curp: item.curp,
+                status: "warning",
+                errors: [
+                  `No se pudo crear el tutor (${gErr.code === 11000 ? "teléfono duplicado" : gErr.message})`,
+                ],
+              });
+            }
+          }
+
+          if (guardian) {
+            // Vincular el guardian al student (réplica de la rama
+            // original, pero solo si el guardian existe).
+            student.guardians = Array.from(new Set([...(student.guardians || []).map(String), guardian._id.toString()]))
+              .map((id) => new mongoose.Types.ObjectId(id));
             await student.save();
-          } catch { /* guardian failed but student ok */ }
+
+            // Crear/vincular User tutor. `phone_taken` no es
+            // fatal: el alumno y el guardian se conservan; el
+            // administrador verá el warning en el resumen.
+            const tutRes = await ensureTutorUser({
+              school,
+              name: guardian.name,
+              lastname: guardian.lastname,
+              phone: guardian.phone,
+            });
+            if (tutRes.ok) {
+              if (
+                !guardian.user_id ||
+                guardian.user_id.toString() !== tutRes.user._id.toString()
+              ) {
+                guardian.user_id = tutRes.user._id;
+                await guardian.save();
+              }
+              if (!guardian.notification_prefs?.whatsapp?.opted_in) {
+                await Guardian.updateOne(
+                  { _id: guardian._id },
+                  {
+                    $set: {
+                      "notification_prefs.whatsapp": {
+                        opted_in: true,
+                        opted_in_at: new Date(),
+                        source: "imported_seed",
+                      },
+                    },
+                  }
+                );
+              }
+            } else if (tutRes.reason === "phone_taken") {
+              warnings.push({
+                index: item.index,
+                curp: item.curp,
+                status: "warning",
+                errors: [tutRes.message],
+              });
+            }
+          }
         }
 
         const enrollment = await Enrollment.create({
@@ -1180,15 +1334,25 @@ const importStudentsFromSpreadsheet = async (req, res, next) => {
           group_id: item.groupId || null, cycle_status: "enrolled",
         });
 
-        created.push({ index: item.index, status: "ok", curp: item.curp, studentId: student._id, enrollmentId: enrollment._id });
+        created.push({
+          index: item.index,
+          status: "ok",
+          curp: item.curp,
+          studentId: student._id,
+          enrollmentId: enrollment._id,
+        });
       } catch (err) {
-        results.push({ index: item.index, status: "error", curp: item.curp, errors: [err.code === 11000 ? "Duplicate" : err.message] });
+        results.push({ index: item.index, status: "error", curp: item.curp, errors: [err.code === 11000 ? "Duplicado" : err.message] });
       }
     }
 
+    const allResults = [...results, ...warnings, ...created].sort((a, b) => a.index - b.index);
     res.status(200).json({
-      total: rows.length, succeeded: created.length, failed: results.length,
-      results: [...results, ...created].sort((a, b) => a.index - b.index),
+      total: rows.length,
+      succeeded: created.length,
+      failed: results.length,
+      warnings: warnings.length,
+      results: allResults,
     });
   } catch (error) { next(error); }
 };

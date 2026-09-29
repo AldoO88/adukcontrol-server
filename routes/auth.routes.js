@@ -10,6 +10,7 @@ const {
   verifyOtpController,
   activateAccountController,
   verifyController,
+  refreshController,
   registerStaffFcmToken,
   changePasswordController,
   requestPasswordReset,
@@ -42,6 +43,11 @@ router.post("/login", loginController);
 
 // POST /auth/logout — limpia la cookie HttpOnly
 router.post("/logout", logoutController);
+
+// POST /auth/refresh — sin JWT propio: el refresh token en body ES la
+// credencial. El controller hace la validación y rotación contra la DB
+// (incluye detección de reuso y revocación de family).
+router.post("/refresh", refreshController);
 
 // POST /auth/request-activation — tutor pide OTP por WhatsApp (rate-limited)
 router.post("/request-activation", otpRequestLimiter, requestActivationController);

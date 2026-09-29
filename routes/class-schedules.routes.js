@@ -8,6 +8,7 @@ const {
   getAllSchedules,
   createSchedule,
   bulkCreate,
+  updateSchedule,
   deleteSchedule,
 } = require("../controllers/class-schedules.controller");
 
@@ -38,5 +39,8 @@ router.post("/bulk", authorize(...writeRoles), bulkCreate);
 
 // DELETE /api/class-schedules/:scheduleId — eliminar horario
 router.delete("/:scheduleId", authorize(...writeRoles), deleteSchedule);
+
+// PUT /api/class-schedules/:scheduleId — actualizar horario
+router.put("/:scheduleId", authorize(...writeRoles), updateSchedule);
 
 module.exports = router;

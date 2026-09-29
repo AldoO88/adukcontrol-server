@@ -31,6 +31,7 @@ const groupTemplatesRouter = require("./group-templates.routes"); // /api/group-
 const classSchedulesRouter = require("./class-schedules.routes"); // /api/class-schedules (horarios de clase)
 const gradingPeriodsRouter = require("./grading-periods.routes"); // /api/grading-periods (períodos de evaluación)
 const studentsCredentialsRouter = require("./students-credentials.routes"); // /api/students/credentials (credenciales PDF)
+const schoolCredentialConfigRouter = require("./school-credential-config.routes"); // /api/schools/:schoolId/credential-template
 const dashboardRouter = require("./dashboard.routes"); // /api/dashboard (stats super admin)
 
 // Health check rápido bajo /api
@@ -39,7 +40,9 @@ router.get("/", (req, res, next) => {
 });
 
 router.use("/schools", schoolsRouter);
+router.use("/schools/:schoolId/credential-template", schoolCredentialConfigRouter);
 router.use("/school-years", schoolYearsRouter);
+router.use("/students/credentials", studentsCredentialsRouter);
 router.use("/students", studentsRouter);
 router.use("/attendance", attendanceRouter);
 router.use("/groups", groupsRouter);
@@ -64,7 +67,6 @@ router.use("/shift-templates", shiftTemplatesRouter);
 router.use("/group-templates", groupTemplatesRouter);
 router.use("/class-schedules", classSchedulesRouter);
 router.use("/grading-periods", gradingPeriodsRouter);
-router.use("/students/credentials", studentsCredentialsRouter);
 router.use("/dashboard", dashboardRouter);
 // Calificaciones: rutas anidadas bajo students + rutas planas en /grades
 router.use("/students/:studentId/grades", studentOnlyGrades);
