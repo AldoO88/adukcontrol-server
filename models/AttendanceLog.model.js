@@ -93,6 +93,21 @@ const attendanceLogSchema = new Schema(
       default: null,
       index: true,
     },
+    // Marcado por el cronjob de chequeo de salida: `true` si a la hora de
+    // corte (shift.endTime + gracePeriodMinutes, o special_exit_time + gracia)
+    // el alumno TENÍA un entry registrado ese día pero NINGÚN exit.
+    // Significa: "sí estuvo en la escuela (entry) pero no pasó por el
+    // biométrico de salida". Se limpia automáticamente cuando el alumno
+    // registra su exit (incluso tarde).
+    // Solo aplica a logs con event_type === "entry".
+    exit_missing: {
+      type: Boolean,
+      default: false,
+    },
+    exit_missing_at: {
+      type: Date,
+      default: null,
+    },
   },
   {
     timestamps: true,
@@ -104,6 +119,16 @@ attendanceLogSchema.index({ student_id: 1, event_time: -1 });
 attendanceLogSchema.index({ event_time: -1, event_type: 1 });
 // Índice compuesto para el patrón de consulta más común: logs por escuela y fecha
 attendanceLogSchema.index({ school: 1, event_time: -1 });
+// Búsqueda de "alumnos sin salida" del día: solo el subconjunto activo de logs
+// con exit_missing=true vive en este índice. Mantiene el filtro barato
+// incluso si la colección crece mucho.
+attendanceLogSchema.index(
+  { school: 1, exit_missing: 1 },
+  {
+    partialFilterExpression: { exit_missing: true },
+    name: "school_exit_missing_active",
+  }
+);
 
 const AttendanceLog = model("AttendanceLog", attendanceLogSchema);
 

@@ -140,30 +140,53 @@ Health: `GET /health` (unauthenticated). Root: `GET /` returns service banner.
 
 ## Auto-absence system (cronjob + grace period)
 
-The system automatically marks students as absent if they don't tap the biometric reader by the cutoff time. It also handles late arrivals that override existing absences.
+The system automatically marks students as absent if they don't tap the biometric reader by the entry cutoff. After the exit cutoff it flags students who entered but never scanned out ("sin salida"). Both passes share a single cron schedule and run for each active shift of each active school.
 
-**How it works:**
-1. Each `SchoolShift` has a `gracePeriodMinutes` field (default 30). Cutoff = `startTime + gracePeriodMinutes`.
-2. A cronjob runs `L-V 08:00` (configurable via `CRON_ABSENCE_SCHEDULE`). For each active school, it calls `markAbsencesForSchool()`.
-3. `markAbsencesForSchool()` checks `SchoolCalendar` — if the date is a holiday/vacation/suspension, it skips. Otherwise, for each shift, it finds active students without an entry log and creates `status: "absent"` logs. Push notifications are sent to each guardian individually.
-4. When a student taps AFTER the cutoff, `resolveLateArrival()` detects the existing `absent` log and updates it to `status: "late"` with the real tap time. If no absent log exists, it creates a normal `late` entry.
+**Schedule:** `*/5 7-16 * * 1-5` (every 5 minutes, Mon–Fri, 07:00–16:59, in `CRON_TZ`). Wider than the entry-only window because the exit check can fire as late as `shift.endTime + gracePeriodMinutes` (up to 14:30 + 120 min = 16:30).
+
+**Pass 1 — Ausencias (entrada).**
+1. Per shift: skip if `absenceMarkedAt` is today (idempotency).
+2. Skip if the entry cutoff (`shift.startTime + gracePeriodMinutes`, or `special_entry_time + gracia` on a special day) has not been reached in `CRON_TZ`.
+3. Call `markAbsencesForSchool(school, year)`. For each active student with NO entry log for today, create a `status: "absent"` log at the cutoff time and push a "AUSENCIA" notification.
+4. Set `absenceMarkedAt = now` (even when nothing was marked — the gate is "did we attempt today", not "did we mark anything").
+
+**Pass 2 — Chequeo de salidas.**
+1. Per shift: skip if `exitCheckedAt` is today.
+2. Skip if the exit cutoff (`shift.endTime + gracePeriodMinutes`, or `special_exit_time + gracia`) has not been reached in `CRON_TZ`.
+3. Call `runExitCheckForSchool(school, year)`. For each active student with an entry log of today (status NOT absent) and NO exit log of today, set `exit_missing: true` + `exit_missing_at: now` on the entry log and push a "SIN SALIDA" notification.
+4. Set `exitCheckedAt = now`.
+
+Both `absenceMarkedAt` and `exitCheckedAt` are reset on server startup if their value is from yesterday (`resetStaleMarkers` in `config/cron.js`).
+
+**Timezone correctness.** The cutoff comparisons use `Intl.DateTimeFormat({ timeZone: CRON_TZ })` (see `getCurrentMinutesInCronTz` in `config/cron.js`) — NOT `new Date().getHours()`, which on Render (UTC container) would mix UTC hours with Mexico-local `startTime` strings and could mark absences/deshoras. **Set `CRON_TZ=America/Mexico_City` in production.**
+
+**Late-arrival override.** When a student taps AFTER the entry cutoff, `registerAttendanceEvent` calls `isAfterGracePeriod`; if true, it routes to `resolveLateArrival`, which flips an existing `absent` log to `on_time` with the real tap time. (`status: "late"` is in the schema enum but never written today — all late taps become `on_time` after the flip.)
+
+**Exit-clear override.** When an `exit` log is created, `registerAttendanceEvent` clears `exit_missing` and `exit_missing_at` on the entry log of the same local day. The "SALIDA: ..." push still fires (normal attendance notification).
+
+**Day-boundary alternation.** `determineNextType(studentId, eventTime)` compares the last log's local date to the event's local date — if they differ, the next tap is forced to `entry`. This prevents a student who forgot to scan out yesterday from having today's morning arrival logged as `exit` (which would also throw off the absent-vs-entry alternate-flow decision).
+
+**AttendanceLog fields added for exit tracking:**
+- `exit_missing: Boolean default false` — set by the cron at the exit cutoff, cleared by an exit tap.
+- `exit_missing_at: Date default null` — when it was flagged.
 
 **Key functions in `services/attendance.service.js`:**
-- `isSchoolDay(school, schoolYearId, date)` — checks `SchoolCalendar` for holidays/vacations
-- `isAfterGracePeriod(student, eventTime)` — computes cutoff from `SchoolShift.startTime + gracePeriodMinutes`
-- `resolveLateArrival({ student, eventTime, device, verificationMode, snapshotUrl })` — updates absent→late or creates late
-- `markAbsencesForSchool(schoolId, schoolYearId, targetDate?)` — the main cronjob function
-
-**AttendanceLog `status` field:** `on_time` | `late` | `absent` | `null` (exit events, legacy). Only set for entry events.
-
-**`SchoolCalendar` model:** `{ school, school_year_id, date, type: "holiday"|"vacation"|"suspension"|"non_lectivo", name? }`. The cronjob skips dates with active calendar entries.
+- `isSchoolDay(school, schoolYearId, date)` — checks `SchoolCalendar`. Returns `{ isSchoolDay, reason, special_entry_time?, special_exit_time? }`. `special_schedule` entries are LECTIVE days with override times.
+- `isAfterGracePeriod(student, eventTime)` — cutoff from `special_entry_time ?? shift.startTime` + grace.
+- `resolveLateArrival({...})` — flips absent → on_time.
+- `markAbsencesForSchool(schoolId, schoolYearId, targetDate?)` — main entry cron function.
+- `runExitCheckForSchool(schoolId, schoolYearId, targetDate?)` — main exit cron function.
 
 **Cron configuration (.env):**
-- `CRON_ABSENCE_ENABLED` — default `true`. Set `false` to disable.
-- `CRON_ABSENCE_SCHEDULE` — default `0 8 * * 1-5` (L-V 08:00).
-- `CRON_TZ` — timezone for the cron schedule (e.g. `America/Mexico_City`).
+- `CRON_ABSENCE_ENABLED` — default `true`. Set `false` to disable BOTH the entry and exit passes.
+- `CRON_TZ` — **required in production** (e.g. `America/Mexico_City`); used for the schedule AND for cutoff comparisons. See "Timezone correctness" above.
+- `ADMS_TZ_OFFSET_MINUTES` — offset in minutes between school wall-clock and UTC (e.g. `-360` for UTC−6). Used to compute local-date for daily bucketing. Set this whenever the backend does not run in the school's timezone.
 
-**Manual trigger:** `POST /api/attendance/mark-absences` (JWT + admin/registrar). Body: `{ date?: "YYYY-MM-DD" }`.
+**Manual triggers:**
+- `POST /api/attendance/mark-absences` (JWT + admin/registrar) — entry pass only. Body: `{ date?: "YYYY-MM-DD" }`.
+- `node scripts/backfill-mark-absences.js` — entry pass for a historical date (manual; does not auto-run).
+
+**`SchoolCalendar.type` enum:** `holiday | vacation | suspension | non_lectivo | special_schedule`. The first four are non-school days (cron skips). `special_schedule` is a school day with `special_entry_time` and/or `special_exit_time` overrides.
 
 ## Hybrid auth: ADMS push from ZKTeco terminals (`/iclock/*`)
 
@@ -278,6 +301,44 @@ Un override manual sigue siendo posible (`PUT /api/students/:studentId` con `bio
 ## Required environment (.env)
 
 `MONGO_URI`, `SECRET_KEY` (≥32 chars, used for JWT), `FIREBASE_SERVICE_ACCOUNT_PATH`, `DEVICE_TRIGGER_API_KEY`, `PORT` (default 5000), `NODE_ENV` (default `development`), `ORIGIN` (default `http://localhost:5173`).
+
+## Special schedule days (`SchoolCalendar.type === "special_schedule"`)
+
+Días lectivos con horario modificado (ej: día de actividad, jornada cultural, salida temprana). **No** es día festivo — los alumnos asisten, solo que a horario distinto al oficial del turno.
+
+**API:** `POST/PUT /api/school-calendar` acepta, además de los campos existentes:
+- `special_entry_time` (`"HH:mm"`, opcional) — entrada oficial del día. Si está presente, el cron usa este valor (en lugar de `shift.startTime`) como inicio para calcular el cutoff de entrada.
+- `special_exit_time` (`"HH:mm"`, opcional) — salida oficial del día. Si está presente, el cron usa este valor (en lugar de `shift.endTime`) como inicio para calcular el corte del chequeo de salidas.
+
+**Validaciones del backend (`controllers/school-calendar.controller.js#validateSpecialScheduleBounds`):**
+- `type === "special_schedule"` requiere al menos uno de los dos horarios.
+- `special_entry_time >= min(shift.startTime)` de los turnos activos del ciclo — los alumnos no se citan antes de la hora oficial.
+- `special_exit_time <= max(shift.endTime)` — los alumnos no se quedan después de la hora oficial.
+- Si no hay turnos activos en el ciclo, los bounds no se aplican (la validación se reduce al formato `HH:mm`).
+
+**Efectos en el cron / taps reales (resumidos):**
+- Corte de entrada (ausencias) = `special_entry_time ?? shift.startTime` + `gracePeriodMinutes` del turno (`services/attendance.service.js#markAbsencesForSchool`).
+- Corte de salida (chequeo de salidas) = `special_exit_time ?? shift.endTime` + `gracePeriodMinutes` (`services/attendance.service.js#runExitCheckForSchool`).
+- Clasificación `on_time` / `late` en taps reales = `isAfterGracePeriod` consulta `SchoolCalendar` para el día del evento y usa el override.
+
+**Configuración:** un solo registro de calendario por (escuela, ciclo, fecha). Si ese día además es festivo/vacación, gana el festivo (no usar `special_schedule` para "no lectivo").
+
+## Chequeo de salidas (cron de ausencias, pase 2)
+
+El mismo cron que marca ausencias corre después un pase para detectar alumnos que **sí entraron pero no salieron**. El papá recibe un push "SIN SALIDA: ..." si su hijo está en esa situación. La alerta se limpia automáticamente cuando el alumno registra su salida (incluso tarde).
+
+**Cuándo corre:** a `shift.endTime + gracePeriodMinutes` (o `special_exit_time + gracia` en días con horario especial). El cron schedule (`*/5 7-16 * * 1-5`) es lo suficientemente ancho para cualquier gracia ≤ 120 min.
+
+**Gate de idempotencia:** `SchoolShift.exitCheckedAt` se resetea al iniciar el server (igual que `absenceMarkedAt`) — un turno solo se chequea una vez por día.
+
+**Modelo:** `AttendanceLog.exit_missing: Boolean` + `exit_missing_at: Date`. Se limpian en `registerAttendanceEvent` cuando se crea un `exit` log del mismo día (consulta por día local con `ADMS_TZ_OFFSET_MINUTES`).
+
+**Push al tutor:** `notification.service.js#sendMissingExitNotification` con título `SIN SALIDA: {nombre}` y cuerpo `{nombre} registró entrada a las HH:mm pero no registró salida. Si se encuentra en la escuela, favor de avisar a la oficina.`. Canal `eduk_attendance_channel`. Data `kind: "missing_exit"`.
+
+**Consulta API (sin UI en web por ahora):** `GET /api/attendance/logs?exit_missing=true` filtra solo los entry logs marcados. Combinable con `from`/`to` para acotar el día. Cuando se implemente la pantalla de asistencia, este endpoint ya tiene los datos.
+
+**NO crear** el push de "sin salida" para alumnos con `status: "absent"` — su entry log es un absent auto-marcado, no significa que estuvo en la escuela. El cron ya lo excluye en `runExitCheckForSchool`.
+
 
 `ADMS_ALLOWED_SERIALS` — comma-separated allowlist of ZKTeco terminal serial numbers permitted to push to `/iclock/*`. **Required in production**: if unset, any SN is accepted (a warning is logged per request).
 

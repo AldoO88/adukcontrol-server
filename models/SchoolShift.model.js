@@ -162,6 +162,14 @@ const schoolShiftSchema = new Schema(
       type: Date,
       default: null,
     },
+    // Timestamp de la última ejecución del chequeo de SALIDAS para este turno.
+    // Mismo patrón que `absenceMarkedAt`: el cron lo usa para no repetir el
+    // chequeo de "no registró salida" más de una vez por turno/día. Se resetea
+    // al iniciar el server.
+    exitCheckedAt: {
+      type: Date,
+      default: null,
+    },
   },
   {
     timestamps: true,

@@ -157,7 +157,7 @@ const deviceTriggerController = async (req, res, next) => {
 // Soporta filtro por group_id (primero busca student_ids del grupo).
 const getAttendanceLogsController = async (req, res, next) => {
   try {
-    const { student_id, group_id, from, to, event_type, status, page = 1, limit = 50 } =
+    const { student_id, group_id, from, to, event_type, status, exit_missing, page = 1, limit = 50 } =
       req.query;
 
     const filter = { ...tenantFilter(req) };
@@ -191,6 +191,14 @@ const getAttendanceLogsController = async (req, res, next) => {
 
     if (status && ["on_time", "late", "absent"].includes(status)) {
       filter.status = status;
+    }
+
+    // exit_missing=true → solo entry logs de alumnos que NO registraron salida
+    // (marcados por el cron a shift.endTime + gracia). Combinable con from/to
+    // para acotar al día o semana en cuestión.
+    if (exit_missing === "true") {
+      filter.exit_missing = true;
+      filter.event_type = "entry";
     }
 
     if (from || to) {

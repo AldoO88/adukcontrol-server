@@ -332,6 +332,56 @@ const sendAbsenceNotification = async (student, attendanceLog) => {
   return dispatchToGuardians(guardians, payload, "attendance");
 };
 
+// Notifica a los tutores de un estudiante que registró ENTRADA pero NO
+// registró SALIDA en el día (el cronjob lo detecta a `shift.endTime +
+// gracePeriodMinutes`). El alumno SÍ estuvo en la escuela — el push sirve
+// para que el papá/tutor confirme la salida de su hijo o pida apoyo al
+// personal si la omisión fue accidental. `entryLog` debe tener al menos
+// `event_time`, `_id` y `student_id`.
+const sendMissingExitNotification = async (student, entryLog) => {
+  const guardians = await Guardian.find({
+    students: entryLog.student_id,
+    school: student.school,
+  })
+    .select("fcm_token phone name user_id school")
+    .lean();
+
+  if (!guardians || guardians.length === 0) {
+    return { dispatched: 0, reason: "no_guardians" };
+  }
+
+  const fullName = `${student.first_name || ""} ${student.last_name || ""}`.trim() ||
+    "Alumno";
+
+  const entryTime = new Date(entryLog.event_time).toLocaleTimeString("en-US", {
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+
+  const payload = {
+    title: `SIN SALIDA: ${fullName}`,
+    body: `${fullName} registró entrada a las ${entryTime} pero no registró salida. Si se encuentra en la escuela, favor de avisar a la oficina.`,
+    channelId: CHANNELS.attendance,
+    data: {
+      kind: "missing_exit",
+      event_type: "entry",
+      student_id: String(entryLog.student_id),
+      controlNumber: student.controlNumber || null,
+      event_time: String(entryLog.event_time),
+      log_id: String(entryLog._id),
+    },
+  };
+
+  const schoolTag = student.school
+    ? student.school.cct || String(student.school._id || student.school)
+    : "no-school";
+
+  console.log(
+    `[attendance][school=${schoolTag}] Dispatching SIN SALIDA for ${fullName} to ${guardians.length} guardian(s)`
+  );
+  return dispatchToGuardians(guardians, payload, "attendance");
+};
+
 // Notifica a los tutores de un estudiante sobre un citatorio recién creado.
 // `citation` debe traer el `student` populado.
 const sendCitationNotification = async (citation) => {
@@ -807,6 +857,7 @@ module.exports = {
   sendToTokens,
   sendAttendanceNotification,
   sendAbsenceNotification,
+  sendMissingExitNotification,
   sendCitationNotification,
   sendCitationRescheduledNotification,
   sendCitationCancelledNotification,
