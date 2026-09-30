@@ -5,6 +5,38 @@ require("dotenv").config(); // Cargar variables de entorno desde .env
 
 require("./db"); // Iniciar conexión a MongoDB al importar
 
+// ---------------------------------------------------------------------
+// OTP_ECHO warning: si la var está activa, loguear un banner bien visible
+// al arrancar para que sea imposible olvidar que el código sale en logs
+// (no se está enviando WhatsApp real). Ver services/whatsapp.service.js.
+// ---------------------------------------------------------------------
+{
+  const v = process.env.OTP_ECHO;
+  const enabled =
+    !!v &&
+    ["1", "true", "console", "yes", "on"].includes(String(v).toLowerCase());
+  if (enabled) {
+    console.warn(
+      "==================================================================="
+    );
+    console.warn(
+      ` [otp-echo] OTP_ECHO=${v} ACTIVO — WhatsApp DESHABILITADO.`
+    );
+    console.warn(
+      " Los códigos de activación / recuperación se imprimen en logs"
+    );
+    console.warn(
+      " del servidor en lugar de enviarse por WhatsApp. NO dejar activo"
+    );
+    console.warn(
+      " en producción con usuarios reales."
+    );
+    console.warn(
+      "==================================================================="
+    );
+  }
+}
+
 // Nota: las notificaciones push ahora usan Expo Push API (HTTP).
 // No se requiere inicialización de Firebase Admin SDK al arranque —
 // el módulo services/notification.service.js funciona on-demand.

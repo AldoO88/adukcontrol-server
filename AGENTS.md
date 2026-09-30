@@ -491,6 +491,17 @@ en `User` y `Guardian` para evitar que se acumulen reintentos en vano.
 - `services/sms.service.js` — DEPRECATED, solo loggea a consola
 - `models/User.model.js` y `models/Guardian.model.js` — campo `notification_prefs.whatsapp`
 
+### `OTP_ECHO` — bypass temporal para probar flujos sin Meta aprobada
+
+Mientras la Authentication template de Meta no está aprobada, Twilio devuelve `63016` y los endpoints OTP retornan `503`. Para validar los flujos de activación (`/auth/request-activation`) y recuperación de contraseña (`/auth/forgot-password/request`) end-to-end sin esperar la aprobación, existe un modo de bypass controlado por env:
+
+- **Var:** `OTP_ECHO` (unset / `0` / `false` = off por default; `1` / `true` / `console` / `yes` / `on` = on).
+- **Efecto:** `services/whatsapp.service.js#sendOtpViaWhatsApp` loguea el código en consola como `[otp-echo] purpose=… to=… code=123456` y devuelve `{ success: true, messageSid: "echo", status: "echo", echoed: true }` — **sin contactar Twilio**, no requiere credenciales ni template.
+- **Persistencia del OTP:** el código sigue hasheándose y guardándose en `User.otpCode` con TTL de 10 min, así `verify-otp` y `activate-account` / `forgot-password/reset` funcionan idéntico que con WhatsApp real.
+- **Warning de arranque:** `app.js` imprime un banner bien visible al boot si la flag está activa (imposible olvidarla en Render Logs).
+- **Cómo probar:** setear `OTP_ECHO=console` en Render, deploy, pedir OTP desde la app, abrir Render Logs y buscar la línea `[otp-echo]` con el código.
+- **⚠️ Apagar siempre** que la template de Meta esté aprobada y las 5 vars `TWILIO_*` estén en Render. Con la flag activa los códigos no salen del servidor: el usuario queda atrapado sin poder activar / recuperar.
+
 ### Costos estimados
 
 - ~$0.04 USD por OTP vía Authentication template.

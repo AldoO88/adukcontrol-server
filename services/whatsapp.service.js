@@ -18,6 +18,34 @@
 
 const twilio = require("twilio");
 
+// =====================================================================
+// OTP_ECHO: bypass temporal para validar flujos sin Twilio.
+// ---------------------------------------------------------------------
+// Mientras la template de Meta no esté aprobada (o en cualquier momento
+// que Twilio no esté configurado), permite probar los flujos de
+// activación y recuperación de contraseña sin enviar WhatsApp real.
+//
+// Activación: setear OTP_ECHO=console (o 1/true) en .env / Render.
+// Cuando está activo, sendOtpViaWhatsApp():
+//   - NO contacta a Twilio (no requiere credenciales ni template).
+//   - Imprime el código en consola: `[otp-echo] purpose=... to=... code=123456`.
+//   - Devuelve `{ success: true, messageSid: "echo", status: "echo" }`.
+//   - El OTP sigue persistido con TTL de 10 min en User.otpCode, así
+//     que verify-otp y activate-account funcionan exactamente igual
+//     que con WhatsApp real.
+//
+// Default (unset/0/false): comportamiento normal de Twilio.
+//
+// ⚠️ NUNCA dejar activo en producción con usuarios reales: el código
+// solo aparece en logs del servidor, no se entrega al usuario vía
+// WhatsApp — quedaría atrapado sin poder activar/recuperar.
+// =====================================================================
+const isOtpEchoEnabled = () => {
+  const v = process.env.OTP_ECHO;
+  if (!v) return false;
+  return ["1", "true", "console", "yes", "on"].includes(String(v).toLowerCase());
+};
+
 // Inicialización lazy para no romper el arranque del server si las
 // credenciales no están configuradas todavía (ej. dev sin Twilio).
 let twilioClient = null;
@@ -104,6 +132,22 @@ const toE164MX = (phone) => {
 // Throws TwilioError (o subclase) en error.
 const sendOtpViaWhatsApp = async (phone, code, purpose = "activation") => {
   const to = toE164MX(phone);
+
+  // Modo echo: loguear el código y devolver éxito sin tocar Twilio.
+  // Útil cuando la template de Meta aún no está aprobada.
+  if (isOtpEchoEnabled()) {
+    console.warn(
+      `[otp-echo] OTP_ECHO activo — WhatsApp DESHABILITADO, code en consola: ` +
+      `purpose=${purpose} to=${to} code=${code}`
+    );
+    return {
+      success: true,
+      messageSid: "echo",
+      status: "echo",
+      echoed: true,
+    };
+  }
+
   const from = process.env.TWILIO_WHATSAPP_FROM;
   const contentSid = process.env.TWILIO_OTP_TEMPLATE_ID;
   const statusCallback = process.env.TWILIO_STATUS_CALLBACK_URL;
