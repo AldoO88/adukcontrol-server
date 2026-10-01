@@ -432,6 +432,23 @@ Cosas que el schema **no** puede validar y tienen que vivir en el controller:
 
 Cualquier cambio en `Grade` o `ConductLog` invalida el cache del dashboard (TTL 5 min) de TODOS los tutores del estudiante afectado vía `services/dashboard-cache.service.js`.
 
+## Guardians — identidad por teléfono y reuso entre hermanos
+
+La identidad del tutor es su **teléfono** dentro de la escuela: el índice único `{school, phone}` (`Guardian.model.js:105`) garantiza que existe a lo sumo un `Guardian` por `{school, phone}`. Esto permite que un mismo padre/madre quede vinculado a varios alumnos (hermanos) sin duplicar registros.
+
+**Endpoints principales (admin/registrar/super_admin):**
+
+| Método | Path | Notas |
+|---|---|---|
+| GET | `/api/guardians?phone=10dígitos` | Lookup exacto por teléfono, usa el índice `{school, phone}`. Recomendado para auto-detección al teclear el teléfono en el form de alta de alumno. Soporta también `?search=` (regex sobre nombre/phone) y `?student_id=` para filtrar. |
+| POST | `/api/guardians` | Crea un tutor. **Si ya existe uno con el mismo `{school, phone}`, lo REUSA** y solo le suma el `students` (mirror en ambos lados) y sincroniza el `User` tutor con `ensureTutorUser`. |
+| POST | `/api/guardians/:guardianId/students` | **Vincula alumnos a un tutor ya existente por ID** (sin necesidad de mandar nombre/teléfono). Body: `{ student_ids: ["…"] }` o `{ student_id: "…" }`. **Aditivo**: `$addToSet` en `Guardian.students` y `Student.guardians` — los hermanos se conservan. Safety: si el guardian no tiene `user_id` aún, llama `ensureTutorUser` (idempotente). Nunca toca `name`/`lastname`/`relationship`/`notification_prefs`. Usado por la modal "Buscar tutor existente" del form de alta de alumno. |
+| PUT | `/api/guardians/:guardianId` | Edita un tutor existente. |
+
+**Regla de no-pisar-datos:** En el reuso por teléfono (tanto en `POST /api/guardians` como en `POST /api/students/import`) **solo completamos campos vacíos** (`name`/`lastname`/`relationship`). Un typo en el alta de un hermano no debe corromper al padre ya registrado — el teléfono es la identidad, sus datos personales son los del primer registro válido. `user_id` y `notification_prefs` nunca se tocan al reusar.
+
+**Import Excel:** El endpoint `POST /api/students/import` (`controllers/students.controller.js`) vincula tutores por teléfono. Si la fila del Excel trae **teléfono sin nombre**, pero el tutor ya existe en la DB, se vincula aunque falte el nombre (no se exige `name` cuando hay reuse). Si no existe y no hay nombre, se reporta `warning` por fila. Cada fila de éxito lleva `guardian_reused: true` + `guardian: "<nombre>"` cuando se reusó un tutor, para que el admin vea en el resumen qué filas se vincularon a un tutor existente.
+
 ## Conventions
 
 - CommonJS (`require`). Spanish comments in source files (doc-internal); English in user-facing strings (error messages, response bodies, Expo Push payloads — the frontend localizes).

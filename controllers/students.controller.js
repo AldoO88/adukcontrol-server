@@ -1221,62 +1221,76 @@ const importStudentsFromSpreadsheet = async (req, res, next) => {
         });
 
         let guardian = null;
-        if (item.guardianName && item.guardianPhone) {
+        let guardianReused = false;
+        if (item.guardianPhone) {
           // --------------------------------------------------------
           // Reuso de hermanos: si ya existe un Guardian con el mismo
-          // {school, phone}, no chocar con el índice único y solo
-          // sumarle el nuevo student.
+          // {school, phone}, lo reusamos y solo le sumamos el nuevo
+          // student — sin necesidad de un nombre en la fila. Un typo
+          // en el nombre del Excel NO debe pisar los datos del tutor
+          // existente (el teléfono es la identidad del tutor).
           // --------------------------------------------------------
           const existingGuardian = await Guardian.findOne({ school, phone: item.guardianPhone });
           if (existingGuardian) {
             guardian = existingGuardian;
-            // Sincronizamos los campos editables (nombre/apellido)
-            // si difieren (útil si el admin corrije el Excel).
-            let dirty = false;
-            if (
-              item.guardianName &&
-              item.guardianName.trim() !== guardian.name
-            ) {
-              guardian.name = item.guardianName.trim();
-              dirty = true;
+            guardianReused = true;
+            // Solo rellenamos campos vacíos para no dejar el registro
+            // a medias (import sin nombre de tutor → completamos).
+            // Nunca pisamos name/lastname/relationship si ya tienen
+            // valor: el teléfono identifica al tutor, sus datos son
+            // los del primer registro válido.
+            const fillIfEmpty =
+              (item.guardianName && (!guardian.name || !guardian.name.trim())) ||
+              (item.guardianLastName && (!guardian.lastname || !guardian.lastname.trim())) ||
+              (item.guardianRelationship && (!guardian.relationship || !guardian.relationship.trim()));
+            if (fillIfEmpty) {
+              if (item.guardianName && (!guardian.name || !guardian.name.trim())) guardian.name = item.guardianName.trim();
+              if (item.guardianLastName && (!guardian.lastname || !guardian.lastname.trim())) guardian.lastname = item.guardianLastName.trim();
+              if (item.guardianRelationship && (!guardian.relationship || !guardian.relationship.trim())) guardian.relationship = item.guardianRelationship.trim();
+              await guardian.save();
             }
-            if (
-              item.guardianLastName !== undefined &&
-              (item.guardianLastName || "") !== (guardian.lastname || "")
-            ) {
-              guardian.lastname = item.guardianLastName || "";
-              dirty = true;
-            }
-            if (dirty) await guardian.save();
           } else {
-            try {
-              guardian = await Guardian.create({
-                school,
-                name: item.guardianName,
-                lastname: item.guardianLastName || "",
-                phone: item.guardianPhone,
-                relationship: item.guardianRelationship,
-                students: [student._id],
-                notification_prefs: {
-                  whatsapp: {
-                    opted_in: true,
-                    opted_in_at: new Date(),
-                    source: "imported_seed",
-                  },
-                },
-              });
-            } catch (gErr) {
-              // Si falla (índice único, schema, etc), reportamos el
-              // warning en vez de tragarlo silenciosamente como
-              // antes. El alumno se conserva igualmente.
+            // No existe: para crear uno nuevo el schema requiere
+            // `name`. Si la fila del Excel trae teléfono pero sin
+            // nombre, reportamos warning en lugar de tragar al alumno
+            // sin tutor silenciosamente.
+            if (!item.guardianName) {
               warnings.push({
                 index: item.index,
                 curp: item.curp,
                 status: "warning",
-                errors: [
-                  `No se pudo crear el tutor (${gErr.code === 11000 ? "teléfono duplicado" : gErr.message})`,
-                ],
+                errors: ["Teléfono del tutor sin nombre: tutor no creado (ya existía en DB se habría reusado)."],
               });
+            } else {
+              try {
+                guardian = await Guardian.create({
+                  school,
+                  name: item.guardianName,
+                  lastname: item.guardianLastName || "",
+                  phone: item.guardianPhone,
+                  relationship: item.guardianRelationship,
+                  students: [student._id],
+                  notification_prefs: {
+                    whatsapp: {
+                      opted_in: true,
+                      opted_in_at: new Date(),
+                      source: "imported_seed",
+                    },
+                  },
+                });
+              } catch (gErr) {
+                // Si falla (índice único, schema, etc), reportamos el
+                // warning en vez de tragarlo silenciosamente como
+                // antes. El alumno se conserva igualmente.
+                warnings.push({
+                  index: item.index,
+                  curp: item.curp,
+                  status: "warning",
+                  errors: [
+                    `No se pudo crear el tutor (${gErr.code === 11000 ? "teléfono duplicado" : gErr.message})`,
+                  ],
+                });
+              }
             }
           }
 
@@ -1286,6 +1300,22 @@ const importStudentsFromSpreadsheet = async (req, res, next) => {
             student.guardians = Array.from(new Set([...(student.guardians || []).map(String), guardian._id.toString()]))
               .map((id) => new mongoose.Types.ObjectId(id));
             await student.save();
+
+            // Mirror: en la rama de REUSO (`existingGuardian`) el
+            // tutor ya existía en la DB y NO recibió al alumno en su
+            // array `students` (en la rama de alta nueva, eso lo hace
+            // el `Guardian.create({ students: [student._id] })`).
+            // Sin este $addToSet, el tutor queda "asignado" al alumno
+            // por el lado Student pero el conteo de `students` en el
+            // Guardian queda desincronizado y la asignación por ID no
+            // funcionaría si la escuela cambia de opinión. Misma
+            // idempotencia que `POST /api/guardians/:id/students`.
+            if (guardianReused) {
+              await Guardian.updateOne(
+                { _id: guardian._id },
+                { $addToSet: { students: student._id } }
+              );
+            }
 
             // Crear/vincular User tutor. `phone_taken` no es
             // fatal: el alumno y el guardian se conservan; el
@@ -1334,13 +1364,22 @@ const importStudentsFromSpreadsheet = async (req, res, next) => {
           group_id: item.groupId || null, cycle_status: "enrolled",
         });
 
-        created.push({
+        const okRow = {
           index: item.index,
           status: "ok",
           curp: item.curp,
           studentId: student._id,
           enrollmentId: enrollment._id,
-        });
+        };
+        // Si se vinculó a un tutor existente por teléfono, lo
+        // marcamos para que el admin vea "Tutor reusado: X" en el
+        // resumen de la importación (y para distinguirlo del alta
+        // de un tutor nuevo).
+        if (guardian && guardianReused) {
+          okRow.guardian_reused = true;
+          okRow.guardian = `${guardian.name}${guardian.lastname ? " " + guardian.lastname : ""}`;
+        }
+        created.push(okRow);
       } catch (err) {
         results.push({ index: item.index, status: "error", curp: item.curp, errors: [err.code === 11000 ? "Duplicado" : err.message] });
       }

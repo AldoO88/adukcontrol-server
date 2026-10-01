@@ -27,6 +27,7 @@ const {
   requestCitationReschedule,
   getMyAnnouncementById,
   getMyCitationById,
+  assignStudentsToGuardian,
 } = require("../controllers/guardians.controller");
 
 // Vista del tutor del ledger de conducta de su hijo + resumen del KPI
@@ -157,6 +158,12 @@ router.get("/", adminOnly, getAllGuardians);
 
 // POST /api/guardians — crear tutor
 router.post("/", adminOnly, createGuardian);
+
+// POST /api/guardians/:guardianId/students — vincular alumnos a un tutor
+// existente por ID (sin mandar nombre/teléfono). Usado por la modal
+// "Buscar tutor existente" del form de alta de alumno. Aditivo:
+// $addToSet en ambos lados, nunca reemplaza el array.
+router.post("/:guardianId/students", adminOnly, assignStudentsToGuardian);
 
 // GET /api/guardians/:guardianId — detalle
 router.get("/:guardianId", getGuardianById);

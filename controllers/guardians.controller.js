@@ -54,10 +54,13 @@ const validateStudentIds = async (studentIds, school) => {
 };
 
 // GET /api/guardians
-// Listar tutores. Filtros opcionales: user_id, student_id, search (por nombre/phone).
+// Listar tutores. Filtros opcionales: user_id, student_id, search
+// (regex por nombre/phone), phone (exacto 10 dígitos, usa el índice
+// único {school, phone} — recomendado para auto-detección en el form
+// de alta de alumno).
 const getAllGuardians = async (req, res, next) => {
   try {
-    const { page = 1, limit = 20, user_id, student_id, search } = req.query;
+    const { page = 1, limit = 20, user_id, student_id, search, phone } = req.query;
 
     const pageNum = Math.max(parseInt(page, 10) || 1, 1);
     const limitNum = Math.min(Math.max(parseInt(limit, 10) || 20, 1), 100);
@@ -69,7 +72,11 @@ const getAllGuardians = async (req, res, next) => {
     if (student_id && mongoose.Types.ObjectId.isValid(student_id)) {
       filter.students = student_id;
     }
-    if (search) {
+    // Búsqueda exacta por teléfono (índice {school, phone}). Más
+    // precisa que el regex `search` cuando el form tiene 10 dígitos.
+    if (phone && /^\d{10}$/.test(String(phone).trim())) {
+      filter.phone = String(phone).trim();
+    } else if (search) {
       const safe = String(search).trim();
       const regex = new RegExp(
         safe.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"),
@@ -189,17 +196,20 @@ const createGuardian = async (req, res, next) => {
     let reused = false;
     if (guardian) {
       reused = true;
-      // Sincronizamos los campos "editables" (nombre/apellido/
-      // parentesco) por si el admin los actualizó desde la UI;
-      // nunca pisamos `user_id` ni `notification_prefs` del existente.
-      const hasChanges =
-        (lastname && lastname.trim() && lastname.trim() !== guardian.lastname) ||
-        (relationship && relationship.trim() !== guardian.relationship) ||
-        (name && name.trim() !== guardian.name);
-      if (hasChanges) {
-        if (name) guardian.name = name;
-        if (lastname && lastname.trim()) guardian.lastname = lastname.trim();
-        if (relationship) guardian.relationship = relationship;
+      // El teléfono es el identificador de identidad del tutor. Si
+      // ya existe un Guardian con ese {school, phone} NO pisamos sus
+      // datos personales (name/lastname/relationship): un typo en el
+      // alta de un hermano no debe corromper al padre. Solo
+      // completamos campos vacíos para no dejar el registro a medias.
+      // Nunca tocamos `user_id` ni `notification_prefs` del existente.
+      const fillIfEmpty =
+        (name && (!guardian.name || !guardian.name.trim()) && name.trim()) ||
+        (lastname && lastname.trim() && (!guardian.lastname || !guardian.lastname.trim())) ||
+        (relationship && (!guardian.relationship || !guardian.relationship.trim()) && relationship.trim());
+      if (fillIfEmpty) {
+        if (!guardian.name || !guardian.name.trim()) guardian.name = name.trim();
+        if (!guardian.lastname || !guardian.lastname.trim()) guardian.lastname = lastname.trim();
+        if (!guardian.relationship || !guardian.relationship.trim()) guardian.relationship = relationship.trim();
         await guardian.save();
       }
       if (validStudents.length > 0) {
@@ -287,6 +297,101 @@ const createGuardian = async (req, res, next) => {
     const status = reused ? 200 : 201;
     const payload = guardian.toObject();
     res.status(status).json(warning ? { ...payload, warning } : payload);
+  } catch (error) {
+    next(error);
+  }
+};
+
+// POST /api/guardians/:guardianId/students
+// Vincula uno o más alumnos a un tutor ya existente por ID, sin
+// necesidad de mandar nombre/teléfono (porque el tutor ya los tiene).
+// Útil cuando el admin elige al tutor desde la modal "Buscar tutor
+// existente" del formulario de alta de alumno. Es ADITIVO: nunca
+// reemplaza el array `students` del tutor, solo suma con $addToSet
+// (hermanos se conservan). El índice único `{school, phone}` sigue
+// garantizando que no haya dos Guardians con el mismo celular.
+//
+// Auth: admin, registrar, super_admin (igual que createGuardian).
+// Tenant: el guardian debe pertenecer a la escuela del JWT, si no
+// responde 404 (mismo patrón que el resto de la API).
+//
+// Safety net: si el guardian no tiene `user_id` aún (caso raro,
+// creado por un flujo sin ensureTutorUser), intenta vincular uno
+// con `ensureTutorUser` para que el papá pueda activar su cuenta.
+// No modifica `name`/`lastname`/`relationship`/`notification_prefs`.
+const assignStudentsToGuardian = async (req, res, next) => {
+  try {
+    const { guardianId } = req.params;
+    if (!mongoose.Types.ObjectId.isValid(guardianId)) {
+      return res.status(404).json({ message: "Guardian not found." });
+    }
+
+    const guardian = await Guardian.findOne({
+      _id: guardianId,
+      ...tenantFilter(req),
+    });
+    if (!guardian) {
+      return res.status(404).json({ message: "Guardian not found." });
+    }
+
+    const body = req.body || {};
+    const rawIds = Array.isArray(body.student_ids)
+      ? body.student_ids
+      : body.student_id
+        ? [body.student_id]
+        : [];
+    if (rawIds.length === 0) {
+      return res.status(400).json({ message: "student_ids is required." });
+    }
+
+    let validIds = [];
+    try {
+      validIds = await validateStudentIds(rawIds, guardian.school);
+    } catch (e) {
+      return res.status(400).json({ message: e.message });
+    }
+    if (validIds.length === 0) {
+      return res.status(400).json({ message: "student_ids is required." });
+    }
+
+    // Mirror en ambos lados: agregamos al array del tutor y al de
+    // cada alumno. `$addToSet` evita duplicar si el alumno ya estaba
+    // vinculado por un import previo o por una llamada anterior.
+    await Guardian.updateOne(
+      { _id: guardian._id },
+      { $addToSet: { students: { $each: validIds } } }
+    );
+    await Student.updateMany(
+      { _id: { $in: validIds } },
+      { $addToSet: { guardians: guardian._id } }
+    );
+
+    // Safety: si por algún motivo el tutor no tiene User (caso de
+    // un Guardian creado fuera del flujo normal), intentamos crear
+    // uno. Esto es idempotente — si ya existe, solo sincroniza.
+    if (!guardian.user_id) {
+      const tutRes = await ensureTutorUser({
+        school: guardian.school,
+        name: guardian.name,
+        lastname: guardian.lastname,
+        phone: guardian.phone,
+      });
+      if (tutRes.ok) {
+        guardian.user_id = tutRes.user._id;
+        await guardian.save();
+      }
+      // Si tutRes.ok === false (phone_taken u otro), no bloqueamos
+      // la asignación — el tutor ya quedó vinculado a los alumnos.
+    }
+
+    // Refrescamos el guardian con `students` populado para devolver
+    // el conteo nuevo al front (para que muestre el aviso "ahora
+    // tiene N alumnos").
+    const fresh = await Guardian.findById(guardian._id)
+      .populate("user_id", "name email role isActive phoneNumber")
+      .populate("students", "controlNumber first_name last_name");
+
+    res.status(200).json(fresh);
   } catch (error) {
     next(error);
   }
@@ -2500,4 +2605,5 @@ module.exports = {
   requestCitationReschedule,
   getMyAnnouncementById,
   getMyCitationById,
+  assignStudentsToGuardian,
 };
