@@ -1222,6 +1222,11 @@ const importStudentsFromSpreadsheet = async (req, res, next) => {
 
         let guardian = null;
         let guardianReused = false;
+        let guardianWarned = false; // cualquier `warnings.push` de
+                                    // esta fila por tutor marca a la
+                                    // fila como "ya cubierta por la
+                                    // tabla de avisos" → se omite de
+                                    // la lista "Alumnos sin tutor".
         if (item.guardianPhone) {
           // --------------------------------------------------------
           // Reuso de hermanos: si ya existe un Guardian con el mismo
@@ -1261,6 +1266,7 @@ const importStudentsFromSpreadsheet = async (req, res, next) => {
                 status: "warning",
                 errors: ["Teléfono del tutor sin nombre: tutor no creado (ya existía en DB se habría reusado)."],
               });
+              guardianWarned = true;
             } else {
               try {
                 guardian = await Guardian.create({
@@ -1290,6 +1296,7 @@ const importStudentsFromSpreadsheet = async (req, res, next) => {
                     `No se pudo crear el tutor (${gErr.code === 11000 ? "teléfono duplicado" : gErr.message})`,
                   ],
                 });
+                guardianWarned = true;
               }
             }
           }
@@ -1355,6 +1362,7 @@ const importStudentsFromSpreadsheet = async (req, res, next) => {
                 status: "warning",
                 errors: [tutRes.message],
               });
+              guardianWarned = true;
             }
           }
         }
@@ -1378,6 +1386,19 @@ const importStudentsFromSpreadsheet = async (req, res, next) => {
         if (guardian && guardianReused) {
           okRow.guardian_reused = true;
           okRow.guardian = `${guardian.name}${guardian.lastname ? " " + guardian.lastname : ""}`;
+        }
+        // Si la fila quedó sin tutor y no se reportó un warning
+        // específico para esa fila (teléfono sin nombre, error de
+        // creación o `phone_taken`), la añadimos a la lista
+        // "Alumnos sin tutor" del resumen para que el admin sepa
+        // a quién dar seguimiento. El alumno se conserva igual
+        // (es un OK, no un error).
+        if (!guardian && !guardianWarned) {
+          okRow.guardian_missing = true;
+          okRow.student_name = `${item.firstName || ""} ${item.lastName || ""}`.trim();
+          okRow.guardian_missing_reason = item.guardianName
+            ? "missing_phone"  // tenía nombre del tutor pero faltó el celular
+            : "no_data";       // la fila no traía datos de tutor
         }
         created.push(okRow);
       } catch (err) {

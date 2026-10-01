@@ -313,6 +313,66 @@ async function main() {
   if (imp2Json.warnings < 1) throw new Error("debería haber 1 warning por teléfono sin nombre");
   console.log("import con tel sin nombre → warning OK:", imp2Json.warnings);
 
+  // ---- Import: alumno con nombre de tutor pero SIN celular → guardian_missing="missing_phone"
+  const ws3 = XLSX.utils.aoa_to_sheet([
+    ["CURP", "nombre", "apellido", "grupo", "tutor_telefono", "tutor_nombre", "tutor_apellido"],
+    ["AAAA000000HDFAAA05", "Hijo5", "López", "1A", "", "Mario", "López"],
+  ]);
+  const wb3 = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb3, ws3, "Alumnos");
+  const buf3 = XLSX.write(wb3, { type: "buffer", bookType: "xlsx" });
+  const fd3 = new FormData();
+  fd3.append("file", new Blob([buf3], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" }), "smoke3.xlsx");
+  fd3.append("school_year_id", yearA._id.toString());
+  fd3.append("school", schoolA._id.toString());
+  const imp3 = await fetch(`${API}/api/students/import`, {
+    method: "POST",
+    headers: { Authorization: `Bearer ${tokenA}` },
+    body: fd3,
+  });
+  const imp3Json = await imp3.json();
+  if (!imp3.ok) throw new Error("import3 falló: " + JSON.stringify(imp3Json));
+  const r3 = imp3Json.results[0];
+  if (r3.status !== "ok") throw new Error("alumno5 debería ser OK, fue " + r3.status);
+  if (!r3.guardian_missing) throw new Error("alumno5 debería llevar guardian_missing=true, fue " + JSON.stringify(r3));
+  if (r3.guardian_missing_reason !== "missing_phone") {
+    throw new Error("alumno5 debería llevar missing_phone, fue " + r3.guardian_missing_reason);
+  }
+  if (r3.student_name !== "Hijo5 López") {
+    throw new Error("alumno5 debería llevar student_name='Hijo5 López', fue " + r3.student_name);
+  }
+  console.log("import nombre-sin-celular → guardian_missing=missing_phone OK");
+
+  // ---- Import: alumno sin datos de tutor → guardian_missing="no_data"
+  const ws4 = XLSX.utils.aoa_to_sheet([
+    ["CURP", "nombre", "apellido", "grupo", "tutor_telefono", "tutor_nombre", "tutor_apellido"],
+    ["AAAA000000HDFAAA06", "Hijo6", "Ramírez", "1A", "", "", ""],
+  ]);
+  const wb4 = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb4, ws4, "Alumnos");
+  const buf4 = XLSX.write(wb4, { type: "buffer", bookType: "xlsx" });
+  const fd4 = new FormData();
+  fd4.append("file", new Blob([buf4], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" }), "smoke4.xlsx");
+  fd4.append("school_year_id", yearA._id.toString());
+  fd4.append("school", schoolA._id.toString());
+  const imp4 = await fetch(`${API}/api/students/import`, {
+    method: "POST",
+    headers: { Authorization: `Bearer ${tokenA}` },
+    body: fd4,
+  });
+  const imp4Json = await imp4.json();
+  if (!imp4.ok) throw new Error("import4 falló: " + JSON.stringify(imp4Json));
+  const r4 = imp4Json.results[0];
+  if (r4.status !== "ok") throw new Error("alumno6 debería ser OK");
+  if (!r4.guardian_missing) throw new Error("alumno6 debería llevar guardian_missing=true");
+  if (r4.guardian_missing_reason !== "no_data") {
+    throw new Error("alumno6 debería llevar no_data, fue " + r4.guardian_missing_reason);
+  }
+  if (r4.student_name !== "Hijo6 Ramírez") {
+    throw new Error("alumno6 debería llevar student_name='Hijo6 Ramírez'");
+  }
+  console.log("import sin-datos → guardian_missing=no_data OK");
+
   console.log("\n✔ TODOS LOS SMOKE TESTS PASARON");
   await mongoose.disconnect();
   process.exit(0);

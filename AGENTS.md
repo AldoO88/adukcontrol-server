@@ -449,6 +449,8 @@ La identidad del tutor es su **teléfono** dentro de la escuela: el índice úni
 
 **Import Excel:** El endpoint `POST /api/students/import` (`controllers/students.controller.js`) vincula tutores por teléfono. Si la fila del Excel trae **teléfono sin nombre**, pero el tutor ya existe en la DB, se vincula aunque falte el nombre (no se exige `name` cuando hay reuse). Si no existe y no hay nombre, se reporta `warning` por fila. Cada fila de éxito lleva `guardian_reused: true` + `guardian: "<nombre>"` cuando se reusó un tutor, para que el admin vea en el resumen qué filas se vincularon a un tutor existente.
 
+**Alumnos creados sin tutor:** Cuando la fila queda sin tutor **y** no se emitió un `warning` específico de tutor (teléfono sin nombre / error de creación / `phone_taken`), el `okRow` lleva `guardian_missing: true`, `student_name: "<nombre completo>"` y `guardian_missing_reason: "missing_phone" | "no_data"`. El front filtra esos `okRow` para mostrar la lista "Alumnos sin tutor" del resumen con el motivo (`missing_phone` → "tenía nombre pero faltaba celular", `no_data` → "sin datos de tutor"). El alumno se conserva — es un OK, no un error. La identidad del tutor es el teléfono; no podemos crear uno sin él (`Guardian.phone` es `required` + `match: /^\d{10}$/`).
+
 ## Conventions
 
 - CommonJS (`require`). Spanish comments in source files (doc-internal); English in user-facing strings (error messages, response bodies, Expo Push payloads — the frontend localizes).
