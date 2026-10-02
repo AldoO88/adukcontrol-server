@@ -421,7 +421,10 @@ const logoutController = async (req, res, next) => {
 };
 
 // POST /auth/request-activation
-// El tutor (pre-registrado por la escuela) solicita un OTP por WhatsApp.
+// Cualquier usuario pre-registrado con isActive=false y que NO sea
+// super_admin/admin (esos fijan password en signup) puede solicitar un
+// OTP por WhatsApp para activar su cuenta y establecer contraseña.
+// Aplica a: tutor, principal, registrar, teacher, prefect, social_worker.
 const requestActivationController = async (req, res, next) => {
   try {
     const { phoneNumber: phoneNumberRaw, phone } = req.body || {};
@@ -442,10 +445,13 @@ const requestActivationController = async (req, res, next) => {
         .status(404)
         .json({ message: "Phone number not registered by the school." });
     }
-    if (user.role !== "tutor") {
-      return res
-        .status(400)
-        .json({ message: "Activation flow is only for tutor accounts." });
+    // super_admin y admin fijan password en /signup; este flujo es solo
+    // para los roles que se crean sin password y se activan vía OTP.
+    if (user.role === "super_admin" || user.role === "admin") {
+      return res.status(400).json({
+        message:
+          "This activation flow is for tutor and non-admin staff accounts. Super_admin and admin set their password directly at signup.",
+      });
     }
     if (user.isActive) {
       return res
@@ -572,7 +578,8 @@ const verifyOtpController = async (req, res, next) => {
 };
 
 // POST /auth/activate-account
-// El tutor verifica el OTP y establece su contraseña permanente.
+// El usuario (tutor o staff no-admin) verifica el OTP y establece su
+// contraseña permanente.
 const activateAccountController = async (req, res, next) => {
   try {
     const { phoneNumber: phoneNumberRaw, phone, otpCode, newPassword } =

@@ -4,8 +4,15 @@
 // para consumir sus webhooks y simplifica el cambio cuando migremos
 // push notifications de Expo.
 //
-// Plantilla de Authentication:
-//   "Tu código de EdukControl es: {{1}}. Expira en 10 minutos."
+// Plantilla de Authentication (Meta exige este formato desde Jun 2023):
+//   - El cuerpo NO se personaliza: preset localizado de Meta
+//     "<código> es tu código de verificación" + recomendación de
+//     seguridad opcional ("no compartas este código") + caducidad
+//     opcional ("Este código caduca en N minutos").
+//   - Botón Copy Code obligatorio.
+//   - `code_expiration_minutes: 10` (alineado con TTL del OTP en User.otpCode).
+//   - Una sola variable {{1}} = código de 6 dígitos.
+//   - Categoría: AUTHENTICATION.
 // El Content Template SID (TWILIO_OTP_TEMPLATE_ID) debe estar aprobado
 // por Meta antes del primer envío real.
 //

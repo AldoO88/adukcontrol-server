@@ -49,13 +49,13 @@ router.post("/logout", logoutController);
 // (incluye detección de reuso y revocación de family).
 router.post("/refresh", refreshController);
 
-// POST /auth/request-activation — tutor pide OTP por WhatsApp (rate-limited)
+// POST /auth/request-activation — tutor o staff no-admin pide OTP por WhatsApp (rate-limited)
 router.post("/request-activation", otpRequestLimiter, requestActivationController);
 
-// POST /auth/verify-otp — valida OTP sin activar la cuenta
+// POST /auth/verify-otp — valida OTP sin activar la cuenta (tutor o staff no-admin)
 router.post("/verify-otp", verifyOtpController);
 
-// POST /auth/activate-account — tutor verifica OTP y establece password
+// POST /auth/activate-account — tutor o staff no-admin verifica OTP y establece password
 router.post("/activate-account", activateAccountController);
 
 // GET /auth/verify — decodificar JWT (requiere token)
