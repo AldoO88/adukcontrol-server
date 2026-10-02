@@ -277,7 +277,7 @@ const getSchoolTeachers = async (req, res, next) => {
       school: schoolId,
       role: "teacher",
     })
-      .select("_id name last_name email phoneNumber isActive sex academicPreparation")
+      .select("_id name last_name email phoneNumber isActive sex academicPreparation notification_prefs")
       .sort({ last_name: 1, name: 1 })
       .lean();
 
@@ -472,6 +472,20 @@ const updateTeacher = async (req, res, next) => {
       }
     }
 
+    // Opt-in WhatsApp: el admin lo puede cambiar desde la pantalla de
+    // edición. Solo se escribe si el valor cambia, para preservar el
+    // source original de auditoría (signup / imported_seed / etc.).
+    if (typeof req.body.whatsapp_opt_in === "boolean") {
+      const current = user.notification_prefs?.whatsapp?.opted_in === true;
+      if (current !== req.body.whatsapp_opt_in) {
+        updates["notification_prefs.whatsapp.opted_in"] = req.body.whatsapp_opt_in;
+        updates["notification_prefs.whatsapp.opted_in_at"] = req.body.whatsapp_opt_in
+          ? new Date()
+          : null;
+        updates["notification_prefs.whatsapp.source"] = "admin_form";
+      }
+    }
+
     if (Object.keys(updates).length === 0) {
       return res.status(400).json({ message: "No valid fields to update." });
     }
@@ -480,7 +494,7 @@ const updateTeacher = async (req, res, next) => {
       { _id: teacherId, school: schoolId },
       { $set: updates },
       { new: true, runValidators: true }
-    ).select("_id name last_name email phoneNumber isActive sex academicPreparation");
+    ).select("_id name last_name email phoneNumber isActive sex academicPreparation notification_prefs");
 
     res.status(200).json({ teacher: updated });
   } catch (error) {
@@ -504,7 +518,7 @@ const getSchoolUsers = async (req, res, next) => {
     }
 
     const users = await User.find({ school: schoolId })
-      .select("_id name last_name email phoneNumber role isActive sex academicPreparation")
+      .select("_id name last_name email phoneNumber role isActive sex academicPreparation notification_prefs")
       .sort({ role: 1, name: 1 })
       .lean();
 
@@ -619,6 +633,20 @@ const updateStaffUser = async (req, res, next) => {
       }
     }
 
+    // Opt-in WhatsApp: el admin lo puede cambiar desde la pantalla de
+    // edición. Solo se escribe si el valor cambia, para preservar el
+    // source original de auditoría (signup / imported_seed / etc.).
+    if (typeof req.body.whatsapp_opt_in === "boolean") {
+      const current = user.notification_prefs?.whatsapp?.opted_in === true;
+      if (current !== req.body.whatsapp_opt_in) {
+        updates["notification_prefs.whatsapp.opted_in"] = req.body.whatsapp_opt_in;
+        updates["notification_prefs.whatsapp.opted_in_at"] = req.body.whatsapp_opt_in
+          ? new Date()
+          : null;
+        updates["notification_prefs.whatsapp.source"] = "admin_form";
+      }
+    }
+
     if (Object.keys(updates).length === 0) {
       return res.status(400).json({ message: "No valid fields to update." });
     }
@@ -627,7 +655,7 @@ const updateStaffUser = async (req, res, next) => {
       { _id: userId, school: schoolId },
       { $set: updates },
       { new: true, runValidators: true }
-    ).select("_id name last_name email phoneNumber role isActive sex academicPreparation");
+    ).select("_id name last_name email phoneNumber role isActive sex academicPreparation notification_prefs");
 
     res.status(200).json({ user: updated });
   } catch (error) {
