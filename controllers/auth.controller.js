@@ -425,9 +425,19 @@ const logoutController = async (req, res, next) => {
 // super_admin/admin (esos fijan password en signup) puede solicitar un
 // OTP por WhatsApp para activar su cuenta y establecer contraseña.
 // Aplica a: tutor, principal, registrar, teacher, prefect, social_worker.
+//
+// Body: { phoneNumber, whatsapp_opt_in?: boolean }
+// Si opted_in=false, el cliente PUEDE pasar whatsapp_opt_in=true en el
+// mismo request para consentir en el momento. Útil cuando el usuario
+// (o el admin en su nombre) descubre que la escuela no marcó el opt-in
+// al pre-registrarlo. Se graba source="activation_request" para auditoría.
 const requestActivationController = async (req, res, next) => {
   try {
-    const { phoneNumber: phoneNumberRaw, phone } = req.body || {};
+    const {
+      phoneNumber: phoneNumberRaw,
+      phone,
+      whatsapp_opt_in,
+    } = req.body || {};
     const phoneNumber = phoneNumberRaw || phone;
 
     if (!phoneNumber || !/^\d{10}$/.test(phoneNumber)) {
@@ -459,15 +469,32 @@ const requestActivationController = async (req, res, next) => {
         .json({ message: "Account is already active. Please log in." });
     }
 
-    // Opt-in check: el tutor debe tener consentimiento explícito para
-    // recibir WhatsApp. La escuela lo captura al pre-registrarlo, o el
-    // tutor lo activa después vía PUT /auth/me/notification-preferences.
+    // Opt-in check: la escuela debe capturar el consentimiento, o el
+    // usuario puede consentir en este mismo request pasando
+    // `whatsapp_opt_in: true` en el body. Es el equivalente a marcar
+    // el checkbox en el formulario de activación — el acto de pedir un
+    // código por WhatsApp siendo acompañado de la afirmación explícita
+    // ES consentimiento para recibir OTPs por ese canal.
     if (!user.notification_prefs?.whatsapp?.opted_in) {
-      return res.status(451).json({
-        message:
-          "We need your consent to send you WhatsApp messages. Please ask your school to enable WhatsApp notifications for your account.",
-        consent_required: true,
-      });
+      if (whatsapp_opt_in === true) {
+        user.notification_prefs = {
+          ...(user.notification_prefs?.toObject?.() ||
+            user.notification_prefs ||
+            {}),
+          whatsapp: {
+            opted_in: true,
+            opted_in_at: new Date(),
+            source: "activation_request",
+          },
+        };
+        // Se persiste junto con otpCode/otpExpiresAt en el save() de abajo.
+      } else {
+        return res.status(451).json({
+          message:
+            "We need your consent to send you WhatsApp messages. Please ask your school to enable WhatsApp notifications for your account, or include { whatsapp_opt_in: true } in your request to consent at this moment.",
+          consent_required: true,
+        });
+      }
     }
 
     const otp = generateOtp();
