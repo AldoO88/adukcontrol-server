@@ -91,12 +91,15 @@ const userSchema = new Schema(
           "Role must be one of: super_admin, admin, principal, registrar, teacher, prefect, social_worker, tutor.",
       },
     },
-    // Activation flag. Staff: true by default. Tutor: false until activated via OTP.
+    // Estado de la cuenta. Default TRUE ("activo") para todos los roles:
+    // el alta nace activa y lo único que falta es el primer login (vía
+    // OTP si el usuario fue creado sin password). isActive=false es una
+    // BAJA explícita puesta por el admin: bloquea login (403), refresh,
+    // forgot-password y la activación OTP. El "pendiente de activar" ya
+    // NO se define por isActive sino por la ausencia de password.
     isActive: {
       type: Boolean,
-      default: function () {
-        return this.role === "super_admin";
-      },
+      default: true,
     },
     // Temporary OTP (hashed with bcrypt). Only present during activation flow.
     // Never returned in default queries.

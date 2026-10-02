@@ -85,7 +85,8 @@ const ensureTutorUser = async ({ school, name, lastname, phone }) => {
     role: "tutor",
     school,
     phoneNumber: phone,
-    isActive: false,
+    // isActive nace TRUE (default del modelo): el tutor está "activo"
+    // y pendiente de fijar password vía OTP (sin password = sin activar).
     notification_prefs: {
       whatsapp: {
         opted_in: TUTOR_DEFAULT_OPTED_IN,

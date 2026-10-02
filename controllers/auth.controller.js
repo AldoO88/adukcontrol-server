@@ -108,6 +108,7 @@ const signupController = async (req, res, next) => {
       student_ids,
       sex,
       whatsapp_opt_in,
+      isActive,
       academicPreparation,
     } = req.body;
 
@@ -235,6 +236,12 @@ const signupController = async (req, res, next) => {
       phoneNumber: phoneNumber.trim(),
       sex: sex || null,
       academicPreparation: academicPreparation || [],
+      // isActive: el modelo default ya es true, pero respetamos el body
+      // para que la UI pueda dar de alta staff como Inactivo desde el
+      // formulario (la baja explícita bloquea login + OTP).
+      ...(isActive === undefined
+        ? {}
+        : { isActive: isActive === true || isActive === "true" }),
       ...(Object.keys(notificationPrefs).length > 0 ? { notification_prefs: notificationPrefs } : {}),
     });
 
@@ -356,6 +363,17 @@ const loginController = async (req, res, next) => {
       return res.status(401).json({ message: "Invalid Password" });
     }
 
+    // isActive==false = cuenta dada de baja por el admin (baja explícita).
+    // Chequeamos DESPUÉS de validar el password para no filtrar el
+    // estado de la cuenta a quien no la conozca; si la baja y el password
+    // no coinciden, igual devolvemos 401, nunca "no existe".
+    if (foundUser.isActive === false) {
+      return res.status(403).json({
+        message:
+          "Your account is disabled. Contact your school for more information.",
+      });
+    }
+
    
 
     if (
@@ -421,10 +439,14 @@ const logoutController = async (req, res, next) => {
 };
 
 // POST /auth/request-activation
-// Cualquier usuario pre-registrado con isActive=false y que NO sea
-// super_admin/admin (esos fijan password en signup) puede solicitar un
+// Cualquier usuario pre-registrado SIN password y que NO sea
+// super_admin/admin (esos fijan password en /signup) puede solicitar un
 // OTP por WhatsApp para activar su cuenta y establecer contraseña.
 // Aplica a: tutor, principal, registrar, teacher, prefect, social_worker.
+//
+// isActive=false bloquea este flujo (cuenta dada de baja por el admin:
+// no se gasta OTP en ella). isActive=true con password ya seteado
+// también bloquea (ya está activa, debe hacer login).
 //
 // Body: { phoneNumber, whatsapp_opt_in?: boolean }
 // Si opted_in=false, el cliente PUEDE pasar whatsapp_opt_in=true en el
@@ -463,7 +485,13 @@ const requestActivationController = async (req, res, next) => {
           "This activation flow is for tutor and non-admin staff accounts. Super_admin and admin set their password directly at signup.",
       });
     }
-    if (user.isActive) {
+    if (user.isActive === false) {
+      return res.status(403).json({
+        message:
+          "Account is disabled. Contact your school to re-enable it.",
+      });
+    }
+    if (user.password) {
       return res
         .status(400)
         .json({ message: "Account is already active. Please log in." });
@@ -572,7 +600,13 @@ const verifyOtpController = async (req, res, next) => {
     if (!user) {
       return res.status(404).json({ message: "Phone number not registered." });
     }
-    if (user.isActive) {
+    if (user.isActive === false) {
+      return res.status(403).json({
+        message:
+          "Account is disabled. Contact your school to re-enable it.",
+      });
+    }
+    if (user.password) {
       return res
         .status(400)
         .json({ message: "Account is already active. Please log in." });
@@ -639,7 +673,13 @@ const activateAccountController = async (req, res, next) => {
     if (!user) {
       return res.status(404).json({ message: "Phone number not registered." });
     }
-    if (user.isActive) {
+    if (user.isActive === false) {
+      return res.status(403).json({
+        message:
+          "Account is disabled. Contact your school to re-enable it.",
+      });
+    }
+    if (user.password) {
       return res
         .status(400)
         .json({ message: "Account is already active. Please log in." });
@@ -738,6 +778,15 @@ const refreshController = async (req, res, next) => {
       // Inconsistencia: el refresh apunta a un user borrado.
       await refreshTokenService.revokeAllForUser(rotated.user);
       return res.status(401).json({ message: "Session invalid." });
+    }
+    // Cuenta dada de baja: revocamos TODAS los refresh del user (no solo
+    // esta) para que no pueda simplemente re-renovar otro token.
+    if (user.isActive === false) {
+      await refreshTokenService.revokeAllForUser(user._id);
+      return res.status(403).json({
+        message:
+          "Your account is disabled. Contact your school for more information.",
+      });
     }
     const authToken = signAccessToken({
       ...user.toObject(),
@@ -937,6 +986,16 @@ const requestPasswordReset = async (req, res, next) => {
     if (!user) {
       return res.status(404).json({
         message: "Phone number not registered.",
+      });
+    }
+
+    // isActive=false = cuenta dada de baja. No gastamos OTP en una cuenta
+    // que no podría terminar el flujo (no podría hacer login aunque
+    // resetee password, por el guard de login).
+    if (user.isActive === false) {
+      return res.status(403).json({
+        message:
+          "Account is disabled. Contact your school to re-enable it.",
       });
     }
 

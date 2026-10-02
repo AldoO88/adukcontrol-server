@@ -460,6 +460,34 @@ La identidad del tutor es su **teléfono** dentro de la escuela: el índice úni
 - Body limit is 1 MB for both JSON and urlencoded.
 - All timestamps use `timestamps: true`; do not add manual `createdAt`/`updatedAt`.
 
+## Account state (`isActive`)
+
+`User.isActive` representa el **estado de la cuenta**: `true` (alta activa) o `false` (baja explícita). Toda nueva cuenta nace activa (`default: true` en el modelo), incluyendo tutores.
+
+**"Pendiente de activar" ya NO se define por este flag**, sino por la **ausencia de `password`**: una cuenta con `isActive=true` y sin password aún no hizo OTP, y puede hacerlo. La baja (`isActive=false`) es una acción admin consciente desde la pantalla de Personal (o equivalente).
+
+**Dónde se valida `isActive === false`:**
+
+| Endpoint | Comportamiento |
+| --- | --- |
+| `POST /auth/login` | `403` "Your account is disabled. Contact your school." (chequeado **después** del password match para no filtrar estado). |
+| `POST /auth/refresh` | `403` + revoca TODA la family de refresh del user. |
+| `POST /auth/request-activation` | `403` "Account is disabled…" (no se gasta OTP en bajas). |
+| `POST /auth/verify-otp` | `403` (mismo motivo). |
+| `POST /auth/activate-account` | `403` (mismo motivo). |
+| `POST /auth/forgot-password/request` | `403` (no quemar OTPs en bajas). |
+
+Los tres endpoints de activación siguen bloqueando con `400 "Account is already active…"` cuando `user.password` ya existe (criterio de "ya activado" — sigue siendo la frase que el mobile mapea a `already_active`).
+
+**Backfill histórico.** Antes de este cambio todos los `User.isActive` nacían `false` (excepto `super_admin`), por lo que cualquier admin creado vía `users/page.tsx` con password quedó con `isActive=false`. Con el nuevo guard de login, eso se traduce en bloqueo de admins. **Rerun antes del deploy del guard:**
+
+```sh
+DRY_RUN=1 MONGO_URI=… node scripts/backfill-user-active.js   # preview
+DRY_RUN=0 MONGO_URI=… node scripts/backfill-user-active.js   # aplica
+```
+
+El script flipea todos los `isActive=false` a `true`. Idempotente. Después del backfill, `isActive=false` solo aparece cuando un operador lo setea explícitamente.
+
 ## WhatsApp OTP (Twilio Business API)
 
 **Proveedor:** Twilio. **Canal único:** WhatsApp (sin fallback SMS).
