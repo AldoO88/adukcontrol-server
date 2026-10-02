@@ -2,16 +2,23 @@
 //
 // Modelo de datos:
 //   - El fondo es el PDF ORIGINAL que sube la escuela desde Canva/Illustrator
-//     (bytes intactos en Cloudinary, resource_type "raw").
+//     (bytes intactos en Cloudinary, resource_type "raw"). La escuela puede
+//     subirlo vertical (54 × 85.6 mm) u horizontal (85.6 × 54 mm) según el
+//     diseño de Canva — la página de salida se orienta igual que el fondo.
 //   - Los elementos dinámicos (foto, textos) se guardan en PUNTOS PDF dentro
-//     de un marco fijo de tarjeta PVC CR80 (85.6 × 54 mm), origen arriba-
-//     izquierda. Al imprimir, el PDF de fondo se dibuja dentro del marco con
-//     escala uniforme "contain" (sin recortar) y los elementos se estampan en
-//     sus coordenadas — misma transformación que aplica el editor web en la
-//     vista previa, para que preview e impresión coincidan.
+//     del marco CR80 HORIZONTAL canónico (85.6 × 54 mm), origen arriba-
+//     izquierda. Es la "convención de almacenamiento" — fija e independiente
+//     de la orientación del fondo. Al imprimir, el PDF de fondo se dibuja
+//     dentro del marco de salida (orientado como el fondo) con escala
+//     uniforme y los elementos guardados se transforman con un mapeo afín
+//     (fitViejo → fitNuevo, mismo factor) para que su posición relativa
+//     sobre el fondo sea idéntica a la del editor web → WYSIWYG exacto,
+//     incluso cuando el fondo es vertical (mismo patrón que el editor).
 //
-// Coordenadas: el editor usa origen arriba-izquierda; en el espacio PDF
-// (origen abajo-izquierda) la conversión es: y_pdf = CR80_HEIGHT_PT - y - h.
+// Coordenadas: el editor usa origen arriba-izquierda en el marco horizontal
+// canónico. Para estampar en PDF (origen abajo-izquierda) sobre la página de
+// salida de altura frameH: y_pdf = frameH - y - h. Si la página es vertical,
+// frameH = CR80_WIDTH_PT (153.07 es horizontal y 242.64 es vertical).
 const { TEXT_FIELDS, sanitizeStyle } = require("./credential-layout.service");
 
 const CR80_WIDTH_PT = 242.64; // 85.6 mm
@@ -162,15 +169,47 @@ function scaleToFit(srcWidth, srcHeight, boxWidth, boxHeight) {
   };
 }
 
+// Mismo cálculo que el editor web: prefere "cover" (borde-a-borde) cuando
+// el recorte quedaría dentro del sangrado típico (≤ 8.5 pt ≈ 3 mm). Si el
+// recorte sería mayor (diseños sin sangrado o formatos muy distintos a
+// tarjeta, p.ej. A4) cae a "contain" para no comerse contenido del borde.
+// Devuelve { scale, width, height, x, y } con x,y origen arriba-izquierda.
+// Espejo del frontend (src/lib/credential-cr80.ts#fitBackground): mantener
+// la misma lógica para que el preview y el PDF de salida coincidan.
+const MAX_BG_CROP_PT = 8.5;
+function fitBackground(srcWidth, srcHeight, frameW, frameH) {
+  if (!(srcWidth > 0) || !(srcHeight > 0) || !(frameW > 0) || !(frameH > 0)) {
+    return scaleToFit(srcWidth, srcHeight, frameW, frameH);
+  }
+  const coverScale = Math.max(frameW / srcWidth, frameH / srcHeight);
+  const drawnW = srcWidth * coverScale;
+  const drawnH = srcHeight * coverScale;
+  const overflowW = Math.max(0, (drawnW - frameW) / 2);
+  const overflowH = Math.max(0, (drawnH - frameH) / 2);
+  if (Math.max(overflowW, overflowH) <= MAX_BG_CROP_PT) {
+    return {
+      scale: coverScale,
+      width: drawnW,
+      height: drawnH,
+      x: (frameW - drawnW) / 2,
+      y: (frameH - drawnH) / 2,
+    };
+  }
+  return scaleToFit(srcWidth, srcHeight, frameW, frameH);
+}
+
 module.exports = {
   CR80_WIDTH_PT,
   CR80_HEIGHT_PT,
   MAX_SIDES,
   MAX_PDF_PAGES,
   MAX_ELEMENTS_PER_SIDE,
+  MAX_FONT_SIZE_PT,
   sanitizeTemplatePdf,
   sanitizeTemplateElement,
   sanitizeSides,
   credentialTemplateHasContent,
   scaleToFit,
+  fitBackground,
+  MAX_BG_CROP_PT,
 };

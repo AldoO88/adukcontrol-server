@@ -1,6 +1,7 @@
 // Router de Credenciales
-// Genera PDFs de credenciales escolares en formato A4 (1 credencial por
-// página). Endpoint único:
+// Genera PDFs de credenciales escolares en tamaño CR80 (1 credencial por
+// página, orientada según el PDF de fondo de la escuela: vertical u
+// horizontal). Endpoint único:
 //
 // GET /api/students/credentials?school_year_id=...&ids=a,b,c
 //   - ids opcional: si se omite, genera credencial para todos los

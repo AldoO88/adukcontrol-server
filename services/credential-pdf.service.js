@@ -3,15 +3,23 @@
 // Flujo de impresión (sin navegador):
 //   1. Descarga el PDF de fondo ORIGINAL de la escuela (Cloudinary raw, con
 //      caché por URL) y lo carga una sola vez.
-//   2. Por alumno × página: crea una página CR80 (242.64 × 153.07 pt),
-//      dibuja el fondo escalado "contain" (misma transformación que el
-//      editor web) y estampa los elementos guardados:
-//        - photo → foto del alumno en PNG (Cloudinary f_png) con contain;
+//   2. Determina la orientación de la página de salida desde la página 0
+//      del fondo (vertical si view.h > view.w, si no horizontal). Todas las
+//      páginas de salida comparten esa orientación para que el duplex del
+//      ZC300 alinee las caras como una sola tarjeta.
+//   3. Por alumno × página: crea una página CR80 orientada como el fondo,
+//      dibuja el fondo con fitBackground (cover si cabe en el sangrado,
+//      si no contain — mismo criterio que el editor web) y estampa los
+//      elementos guardados transformados con un mapeo afín desde el marco
+//      horizontal canónico (donde se almacenan) hasta el marco de salida
+//      (donde se imprimen). Si la salida es horizontal y el fit del fondo
+//      no cambia, el mapeo es identidad y no hay regresión.
+//        - photo → foto del alumno en PNG (Cloudinary f_png) con cover;
 //          placeholder gris si no hay foto.
 //        - text  → campo mapeado o texto libre con Helvetica/HelveticaBold,
 //          alineación, wrap de párrafos + auto-shrink (mismo algoritmo y
 //          métricas que el diseñador → WYSIWYG).
-//   3. Devuelve el Buffer PDF listo para enviar.
+//   4. Devuelve el Buffer PDF listo para enviar.
 //
 // Rendimiento: el fondo se cachea; las fotos únicas se pre-cargan en
 // paralelo (pool) y cada estampado es operación de milisegundos.
@@ -23,7 +31,7 @@ const cloudinaryUtils = require("cloudinary/lib/utils/index.js");
 const {
   CR80_WIDTH_PT,
   CR80_HEIGHT_PT,
-  scaleToFit,
+  fitBackground,
 } = require("./credential-template.service");
 
 // Escala la imagen para CUBRIR el destino (object-fit: cover): llena el
@@ -49,6 +57,35 @@ function scaleToCover(srcW, srcH, dstW, dstH) {
     width: drawW,
     height: drawH,
   };
+}
+
+// Mapea un elemento guardado en el marco horizontal canónico al marco de
+// salida (horizontal o vertical) usando el factor uniforme k = sNuevo/sViejo
+// entre los fit del fondo. Conserva la posición relativa del elemento sobre
+// el fondo: si la salida es horizontal con el mismo fit, k = 1 → identidad.
+// Devuelve una COPIA con coords + fontSize escalados, clampada a la página.
+function transformElement(el, fitOld, fitNew, frameW, frameH) {
+  const oldScale = fitOld.scale || 0;
+  const newScale = fitNew.scale || 0;
+  if (oldScale <= 0 || newScale <= 0) {
+    return { ...el };
+  }
+  const k = newScale / oldScale;
+  const ox = fitOld.x || 0;
+  const oy = fitOld.y || 0;
+  const nx = fitNew.x || 0;
+  const ny = fitNew.y || 0;
+  const w = Math.max(4, (el.w || 0) * k);
+  const h = Math.max(4, (el.h || 0) * k);
+  const rawX = nx + ((el.x || 0) - ox) * k;
+  const rawY = ny + ((el.y || 0) - oy) * k;
+  const x = Math.min(Math.max(0, rawX), Math.max(0, frameW - w));
+  const y = Math.min(Math.max(0, rawY), Math.max(0, frameH - h));
+  const out = { ...el, x, y, w, h };
+  if (el.style && Number.isFinite(el.style.fontSize)) {
+    out.style = { ...el.style, fontSize: el.style.fontSize * k };
+  }
+  return out;
 }
 const {
   resolveField,
@@ -209,7 +246,7 @@ function hexToColor(value, fallback = rgb(0, 0, 0)) {
 // ── Estampado de elementos ──────────────────────────────────────────
 const ASCENDER_RATIO = 0.776; // línea: baseline ≈ topline + lineH * 0.776
 
-function stampText(page, fonts, el, data) {
+function stampText(page, fonts, el, data, frameH) {
   const raw = el.field ? resolveField(el.field, data) : el.text || "";
   if (raw === "" || raw == null) return;
   const paragraphs = (Array.isArray(raw) ? raw : String(raw).split("\n"))
@@ -221,7 +258,7 @@ function stampText(page, fonts, el, data) {
   const bold = st.fontWeight === "bold" || Number(st.fontWeight) >= 600;
   const font = bold ? fonts.bold : fonts.regular;
   const color = hexToColor(st.color);
-  const yTop = CR80_HEIGHT_PT - el.y - el.h;
+  const yTop = frameH - el.y - el.h;
 
   // Mismo algoritmo que el diseñador (wrap voraz + auto-shrink + safety,
   // services/credential-text-layout.js ≡ web/src/lib/cr80-text-layout.ts):
@@ -239,11 +276,11 @@ function stampText(page, fonts, el, data) {
   const lineH = font.heightAtSize(size);
   const spacing = size * 1.2;
   // Centramos midiendo desde el borde SUPERIOR (mismo lado que el
-  // editor). En yup: topEdge = CR80_HEIGHT_PT - el.y. La distancia de
+  // editor). En yup: topEdge = frameH - el.y. La distancia de
   // la baseline al top del elemento es, igual que en el lienzo,
   //   blockTop + i*spacing + lineH*ASCENDER_RATIO
   // con blockTop = max(0, (h - n*spacing)/2). PDF usa y-up → restamos.
-  const topYup = CR80_HEIGHT_PT - el.y;
+  const topYup = frameH - el.y;
   const blockTop = Math.max(0, (el.h - lines.length * spacing) / 2);
   lines.forEach((line, i) => {
     const textW = font.widthOfTextAtSize(line, size);
@@ -277,8 +314,8 @@ function clipEnd(page) {
   page.pushOperators(pdfLib.popGraphicsState());
 }
 
-async function stampPhoto(page, out, el, data, fotoCache) {
-  const yTop = CR80_HEIGHT_PT - el.y - el.h;
+async function stampPhoto(page, out, el, data, fotoCache, frameH) {
+  const yTop = frameH - el.y - el.h;
   const photoUrl = data.student.photoUrl || "";
   const foto = photoUrl ? fotoCache.get(photoUrl) || null : null;
 
@@ -322,8 +359,8 @@ async function stampPhoto(page, out, el, data, fotoCache) {
 // Logo de la escuela: imagen subida a Cloudinary desde
 // /credential-config/logos; rendereada con la misma semántica "contain"
 // que la foto del alumno, dentro de la caja del elemento.
-async function stampLogo(page, out, el, logoCache) {
-  const yTop = CR80_HEIGHT_PT - el.y - el.h;
+async function stampLogo(page, out, el, logoCache, frameH) {
+  const yTop = frameH - el.y - el.h;
   const logo = el.logoId ? logoCache.get(el.logoId) || null : null;
 
   const drawPlaceholder = () => {
@@ -380,8 +417,8 @@ async function stampLogo(page, out, el, logoCache) {
 
 // Figuras básicas: línea, rect, elipse. Comparten stroke / fill /
 // strokeWidth desde el.style del elemento, idéntico al editor.
-function stampShape(page, el) {
-  const yTop = CR80_HEIGHT_PT - el.y - el.h;
+function stampShape(page, el, frameH) {
+  const yTop = frameH - el.y - el.h;
   const st = el.style || {};
   const stroke = st.stroke ? hexToColor(st.stroke) : undefined;
   const fill = st.fill ? hexToColor(st.fill) : undefined;
@@ -467,11 +504,24 @@ async function composeCredentialsPdf({ pdfMeta, sides, students, school, schoolY
     };
     const w = view.right - view.left;
     const h = view.top - view.bottom;
+    // Fit del fondo en el marco horizontal canónico (lo que ve el editor).
+    const fitOld = fitBackground(w, h, CR80_WIDTH_PT, CR80_HEIGHT_PT);
     embedded[p] = {
       page: await out.embedPage(src, view),
-      fit: scaleToFit(w, h, CR80_WIDTH_PT, CR80_HEIGHT_PT),
+      viewW: w,
+      viewH: h,
+      fitOld,
     };
   }
+
+  // Orientación de la página de salida: la dicta la página 0 del fondo
+  // (vertical si view.h > view.w). Todas las páginas comparten tamaño para
+  // que el duplex del ZC300 alinee correctamente ambas caras de la tarjeta.
+  const firstViewW = embedded[0]?.viewW || CR80_WIDTH_PT;
+  const firstViewH = embedded[0]?.viewH || CR80_HEIGHT_PT;
+  const outPortrait = firstViewH > firstViewW;
+  const frameW = outPortrait ? CR80_HEIGHT_PT : CR80_WIDTH_PT;
+  const frameH = outPortrait ? CR80_WIDTH_PT : CR80_HEIGHT_PT;
 
   // Prefetch de fotos únicas en paralelo (limitado).
   const photoUrls = [
@@ -514,20 +564,33 @@ async function composeCredentialsPdf({ pdfMeta, sides, students, school, schoolY
     });
 
     for (let p = 0; p < pageCount; p++) {
-      const { page: bgPage, fit } = embedded[p];
-      const page = out.addPage([CR80_WIDTH_PT, CR80_HEIGHT_PT]);
-      page.drawPage(bgPage, { x: fit.x, y: fit.y, xScale: fit.scale, yScale: fit.scale });
+      const { page: bgPage, fitOld } = embedded[p];
+      // Fit del mismo fondo dentro del marco de salida (horizontal o vertical).
+      const fitNew = fitBackground(
+        embedded[p].viewW,
+        embedded[p].viewH,
+        frameW,
+        frameH,
+      );
+      const page = out.addPage([frameW, frameH]);
+      page.drawPage(bgPage, {
+        x: fitNew.x,
+        y: fitNew.y,
+        xScale: fitNew.scale,
+        yScale: fitNew.scale,
+      });
 
       const elements = sides[p]?.elements || [];
       for (const el of elements) {
-        if (el.kind === "photo") {
-          await stampPhoto(page, out, el, data, fotoCache);
-        } else if (el.kind === "text") {
-          stampText(page, fonts, el, data);
-        } else if (el.kind === "logo") {
-          await stampLogo(page, out, el, logoCache);
-        } else if (el.kind === "shape") {
-          stampShape(page, el);
+        const mapped = transformElement(el, fitOld, fitNew, frameW, frameH);
+        if (mapped.kind === "photo") {
+          await stampPhoto(page, out, mapped, data, fotoCache, frameH);
+        } else if (mapped.kind === "text") {
+          stampText(page, fonts, mapped, data, frameH);
+        } else if (mapped.kind === "logo") {
+          await stampLogo(page, out, mapped, logoCache, frameH);
+        } else if (mapped.kind === "shape") {
+          stampShape(page, mapped, frameH);
         }
       }
     }
