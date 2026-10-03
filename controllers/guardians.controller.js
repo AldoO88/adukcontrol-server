@@ -183,10 +183,12 @@ const getAllGuardians = async (req, res, next) => {
       } else {
         finalIds = [...idsByTaller];
       }
-      // Si el set quedó vacío (ej. grupo sin alumnos inscritos) el
-      // filtro `students: { $in: [] }` no matchea nada → 0 tutores.
-      // Combinamos con un `student_id` previo si lo hubiera.
-      filter.students = finalIds.length === 0 ? ["__none__"] : { $in: finalIds };
+      // Si el set derivado está vacío (grupo sin matriculados / taller
+      // sin alumnos), respondemos vacío sin reintentar el filtro.
+      if (finalIds.length === 0) {
+        return res.status(200).json({ items: [], total: 0, page: pageNum, limit: limitNum, pages: 0 });
+      }
+      filter.students = { $in: finalIds };
     }
 
     const skip = (pageNum - 1) * limitNum;
