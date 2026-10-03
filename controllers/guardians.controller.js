@@ -35,6 +35,27 @@ const ADMIN_LIKE_ROLES = ["admin", "registrar", "super_admin"];
 
 // Helper: valida que cada studentId exista, pertenezca a la misma escuela
 // y (opcional) esté activo. Devuelve los docs o lanza error.
+// Cascada de User.isActive según el estado de los Guardian del mismo
+// tutor. Regla: un tutor tiene `User.isActive=false` ⇔ NO tiene
+// NINGÚN Guardian activo (isActive !== false). Así un tutor dado de
+// baja en TODAS sus tutorías no puede entrar al dashboard / app.
+//
+// Si tiene ≥1 Guardian activo, su cuenta se mantiene (o se reactiva) a
+// `User.isActive=true`. Esto sincroniza ambos lados sin que el admin
+// tenga que tocar la cuenta User manualmente.
+const syncUserActiveFromGuardians = async (userId) => {
+  if (!userId) return;
+  const activeCount = await Guardian.countDocuments({
+    user_id: userId,
+    isActive: { $ne: false },
+  });
+  const shouldBeActive = activeCount > 0;
+  await User.updateOne(
+    { _id: userId },
+    { $set: { isActive: shouldBeActive } }
+  );
+};
+
 const validateStudentIds = async (studentIds, school) => {
   if (!Array.isArray(studentIds) || studentIds.length === 0) return [];
   const validIds = studentIds.filter((id) => mongoose.Types.ObjectId.isValid(id));
@@ -60,7 +81,16 @@ const validateStudentIds = async (studentIds, school) => {
 // de alta de alumno).
 const getAllGuardians = async (req, res, next) => {
   try {
-    const { page = 1, limit = 20, user_id, student_id, search, phone } = req.query;
+    const {
+      page = 1,
+      limit = 20,
+      user_id,
+      student_id,
+      search,
+      phone,
+      status,
+      no_students,
+    } = req.query;
 
     const pageNum = Math.max(parseInt(page, 10) || 1, 1);
     const limitNum = Math.min(Math.max(parseInt(limit, 10) || 20, 1), 100);
@@ -83,6 +113,19 @@ const getAllGuardians = async (req, res, next) => {
         "i"
       );
       filter.$or = [{ name: regex }, { lastname: regex }, { phone: regex }];
+    }
+    // status=active|inactive|all (default: all)
+    if (status === "active") {
+      filter.isActive = { $ne: false };
+    } else if (status === "inactive") {
+      filter.isActive = false;
+    }
+    // no_students=1 filtra los tutores sin alumnos vinculados
+    // (huérfanos tras un import sin teléfono o un desvincular masivo).
+    if (String(no_students) === "1") {
+      filter.$and = [
+        { $or: [{ students: { $size: 0 } }, { students: { $exists: false } }] },
+      ];
     }
 
     const skip = (pageNum - 1) * limitNum;
@@ -108,13 +151,143 @@ const getAllGuardians = async (req, res, next) => {
   }
 };
 
+// GET /api/guardians/stats
+// Devuelve métricas del módulo de tutores para la pantalla "Padres".
+// Pensado para una sola request por carga (4 cifras en una pasada).
+//
+// Cifras (todas tenant-scoped):
+//   total                — todos los Guardian de la escuela
+//   activos              — con isActive !== false (null/missing cuentan
+//                          como activos — coincide con backfill
+//                          backfill-guardian-active.js)
+//   dados_de_baja        — isActive === false
+//   con_hijos_en_ciclo   — con ≥1 Student que tenga Enrollment con
+//                          cycle_status "enrolled" en el ciclo activo
+//                          de la escuela
+//   sin_alumnos          — students[] vacío o ausente
+//   con_cuenta_activa    — su User.role=tutor existe y User.isActive=true
+//   alumnos_sin_tutor    — Student con school de la escuela cuyo _id
+//                          no aparece en ningún Guardian.students de
+//                          la escuela (incluye activos y desactivados)
+const getGuardiansStats = async (req, res, next) => {
+  try {
+    const tenant = tenantFilter(req);
+    const db = mongoose.connection.db;
+
+    // Escuela del tenant (para resolver el ciclo activo). Si el
+    // super_admin pidió sin school, devolvemos 0 en los cortes por
+    // ciclo y dejamos los conteos school-wide agregados a null.
+    let activeSchoolYearId = null;
+    if (req.payload.role !== "super_admin" && req.payload.schoolId) {
+      const school = await db
+        .collection("schools")
+        .findOne({ _id: req.payload.schoolId }, { projection: { current_school_year_id: 1 } });
+      activeSchoolYearId = school?.current_school_year_id || null;
+    } else if (req.payload.role === "super_admin") {
+      // super_admin sin scope específico: agregamos por escuela; el
+      // front (que siempre navega dentro de una escuela) no usará
+      // esta rama. Para mantenerlo simple, lo dejamos en null.
+    }
+
+    const [
+      total,
+      ativos,
+      dadosDeBaja,
+      sinAlumnos,
+      conCuentaActivaAgg,
+      allLinkedStudents,
+    ] = await Promise.all([
+      Guardian.countDocuments(tenant),
+      Guardian.countDocuments({ ...tenant, isActive: { $ne: false } }),
+      Guardian.countDocuments({ ...tenant, isActive: false }),
+      Guardian.countDocuments({
+        ...tenant,
+        $or: [{ students: { $size: 0 } }, { students: { $exists: false } }],
+      }),
+      Guardian.aggregate([
+        { $match: { ...tenant, user_id: { $ne: null } } },
+        {
+          $lookup: {
+            from: "users",
+            localField: "user_id",
+            foreignField: "_id",
+            as: "user",
+          },
+        },
+        { $unwind: "$user" },
+        { $match: { "user.isActive": true } },
+        { $count: "n" },
+      ]),
+      Guardian.distinct("students", {
+        ...tenant,
+        students: { $exists: true, $ne: [] },
+      }),
+    ]);
+
+    const conCuentaActiva = conCuentaActivaAgg[0]?.n || 0;
+
+    // Filtrar ObjectIds inválulos que pueden haber quedado en
+    // arrays (defensivo, no debería pasar).
+    const linkedStudentIds = allLinkedStudents
+      .filter((id) => mongoose.Types.ObjectId.isValid(String(id)))
+      .map((id) => new mongoose.Types.ObjectId(String(id)));
+
+    let conHijosEnCiclo = 0;
+    let alumnosSinTutor = 0;
+
+    if (activeSchoolYearId) {
+      // Padres con ≥1 hijo con enrollment "enrolled" en el ciclo activo.
+      const enrolled = await db
+        .collection("enrollments")
+        .distinct("student_id", {
+          school: req.payload.schoolId,
+          school_year_id: activeSchoolYearId,
+          cycle_status: "enrolled",
+        });
+      const enrolledSet = new Set(enrolled.map((id) => String(id)));
+      conHijosEnCiclo = await Guardian.countDocuments({
+        ...tenant,
+        isActive: { $ne: false },
+        students: { $in: Array.from(enrolledSet).map((s) => new mongoose.Types.ObjectId(s)) },
+      });
+    }
+
+    // Alumnos sin tutor: todos los students activos del tenant que no
+    // aparecen en la lista linked (vinculados por cualquier guardian,
+    // activo o no — refleja "huérfanos" actuales).
+    if (linkedStudentIds.length > 0) {
+      alumnosSinTutor = await Student.countDocuments({
+        ...tenant,
+        _id: { $nin: linkedStudentIds },
+      });
+    } else {
+      alumnosSinTutor = await Student.countDocuments(tenant);
+    }
+
+    res.status(200).json({
+      total,
+      activos,
+      dados_de_baja: dadosDeBaja,
+      sin_alumnos: sinAlumnos,
+      con_cuenta_activa: conCuentaActiva,
+      con_hijos_en_ciclo: conHijosEnCiclo,
+      alumnos_sin_tutor: alumnosSinTutor,
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
 // GET /api/guardians/me
 // Devuelve los guardianes del usuario autenticado (útil para el tutor).
+// Filtra los dados de baja (isActive === false) — un tutor desactivado
+// no debe ver el dashboard con datos viejos de sus hijos.
 const getMyGuardians = async (req, res, next) => {
   try {
     const items = await Guardian.find({
       ...tenantFilter(req),
       user_id: req.payload._id,
+      isActive: { $ne: false },
     }).populate("students", "controlNumber first_name last_name");
     res.status(200).json({ items, total: items.length });
   } catch (error) {
@@ -397,6 +570,68 @@ const assignStudentsToGuardian = async (req, res, next) => {
   }
 };
 
+// DELETE /api/guardians/:guardianId/students/:studentId
+// Desvincula UN estudiante del tutor (cambio de tutor puntual).
+// Aplica `$pull` en ambos lados (student.guardians y guardian.students)
+// — espejo de la lógica de deleteGuardian pero a nivel de UNO.
+//
+// Permisos: admin/registrar/super_admin. Valida tenant por la
+// combinación de ambos ids.
+const unassignStudentFromGuardian = async (req, res, next) => {
+  try {
+    const { guardianId, studentId } = req.params;
+    if (
+      !mongoose.Types.ObjectId.isValid(guardianId) ||
+      !mongoose.Types.ObjectId.isValid(studentId)
+    ) {
+      return res.status(404).json({ message: "Guardian or student not found." });
+    }
+    if (!ADMIN_LIKE_ROLES.includes(req.payload.role)) {
+      return res.status(403).json({
+        message: "Only admin/registrar can unassign students.",
+      });
+    }
+
+    const tenant = tenantFilter(req);
+    const guardian = await Guardian.findOne({ _id: guardianId, ...tenant });
+    if (!guardian) {
+      return res.status(404).json({ message: "Guardian not found." });
+    }
+    const student = await Student.findOne({ _id: studentId, ...tenant });
+    if (!student) {
+      return res.status(404).json({ message: "Student not found." });
+    }
+
+    // Idempotente: si no estaba vinculado, devolvemos 200 con un mensaje
+    // explicativo sin tocar DB.
+    const wasLinked = guardian.students.some(
+      (id) => String(id) === String(studentId)
+    );
+
+    if (wasLinked) {
+      await Guardian.updateOne(
+        { _id: guardian._id },
+        { $pull: { students: studentId } }
+      );
+      await Student.updateOne(
+        { _id: studentId },
+        { $pull: { guardians: guardian._id } }
+      );
+    }
+
+    res.status(200).json({
+      message: wasLinked
+        ? "Student unassigned from guardian."
+        : "Student was not linked to this guardian (no-op).",
+      guardianId,
+      studentId,
+      wasLinked,
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
 // GET /api/guardians/:guardianId
 const getGuardianById = async (req, res, next) => {
   try {
@@ -470,6 +705,42 @@ const updateGuardian = async (req, res, next) => {
       }
     }
 
+    // Validar isActive (solo admin/registrar/super_admin pueden cambiar
+// el estado del registro). Transicionar a `false` desvincula TODOS
+// los hijos del tutor y desactiva su cuenta User si queda sin
+// guardians activos (para que no entre al dashboard). Transicionar a
+// `true` reactiva la cuenta User si existía y estaba dada de baja.
+    if (req.body.isActive !== undefined) {
+      if (typeof req.body.isActive !== "boolean") {
+        return res.status(400).json({ message: "isActive must be boolean." });
+      }
+      if (!isAdmin) {
+        return res.status(403).json({
+          message: "Only admin/registrar can change isActive.",
+        });
+      }
+      const wasActive = guardian.isActive !== false;
+      const becomingInactive = wasActive && req.body.isActive === false;
+      const becomingActive = !wasActive && req.body.isActive === true;
+      if (becomingInactive) {
+        // Desvincular todos los hijos (ambos lados)
+        const studentIds = guardian.students.map((s) => s);
+        if (studentIds.length > 0) {
+          await Student.updateMany(
+            { _id: { $in: studentIds } },
+            { $pull: { guardians: guardian._id } }
+          );
+          await Guardian.updateOne(
+            { _id: guardian._id },
+            { $set: { students: [] } }
+          );
+        }
+      }
+      // Reactivar el User tutor si quedó libre (no hay otros
+      // guardian activos con ese user_id). La inactivación la hace
+      // automáticamente `syncUserActiveFromGuardians` después del save.
+    }
+
     // Validar students si se actualiza
     if (req.body.students !== undefined) {
       let validStudents = [];
@@ -509,6 +780,15 @@ const updateGuardian = async (req, res, next) => {
     const { students: _ignore, notification_prefs: _ignorePrefs, ...rest } = req.body;
     Object.assign(guardian, rest);
     await guardian.save();
+
+    // Sincronizar el User tutor cuando cambió isActive (en cualquier
+    // dirección). Si el tutor se desactivó y ya no queda asociado a
+    // ningún guardian activo, su cuenta User también pasa a
+    // isActive=false (login → 403). Si se reactivó y su User estaba
+    // bajado, lo subimos.
+    if (req.body.isActive !== undefined && guardian.user_id) {
+      await syncUserActiveFromGuardians(guardian.user_id);
+    }
 
     // Opt-in WhatsApp: aplicar explícitamente (no vía Object.assign porque
     // notification_prefs es un subdoc y se debe respetar la forma canónica).
@@ -2588,6 +2868,7 @@ const requestCitationReschedule = async (req, res, next) => {
 
 module.exports = {
   getAllGuardians,
+  getGuardiansStats,
   getMyGuardians,
   createGuardian,
   getGuardianById,
@@ -2606,4 +2887,5 @@ module.exports = {
   getMyAnnouncementById,
   getMyCitationById,
   assignStudentsToGuardian,
+  unassignStudentFromGuardian,
 };

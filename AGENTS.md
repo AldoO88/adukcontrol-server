@@ -445,7 +445,8 @@ La identidad del tutor es su **teléfono** dentro de la escuela: el índice úni
 | GET | `/api/guardians?phone=10dígitos` | Lookup exacto por teléfono, usa el índice `{school, phone}`. Recomendado para auto-detección al teclear el teléfono en el form de alta de alumno. Soporta también `?search=` (regex sobre nombre/phone) y `?student_id=` para filtrar. |
 | POST | `/api/guardians` | Crea un tutor. **Si ya existe uno con el mismo `{school, phone}`, lo REUSA** y solo le suma el `students` (mirror en ambos lados) y sincroniza el `User` tutor con `ensureTutorUser`. |
 | POST | `/api/guardians/:guardianId/students` | **Vincula alumnos a un tutor ya existente por ID** (sin necesidad de mandar nombre/teléfono). Body: `{ student_ids: ["…"] }` o `{ student_id: "…" }`. **Aditivo**: `$addToSet` en `Guardian.students` y `Student.guardians` — los hermanos se conservan. Safety: si el guardian no tiene `user_id` aún, llama `ensureTutorUser` (idempotente). Nunca toca `name`/`lastname`/`relationship`/`notification_prefs`. Usado por la modal "Buscar tutor existente" del form de alta de alumno. |
-| PUT | `/api/guardians/:guardianId` | Edita un tutor existente. |
+| DELETE | `/api/guardians/:guardianId/students/:studentId` | **Desvincula UN estudiante puntual** del tutor (cambio de tutor a mitad de ciclo: ya no es la mamá ahora es el papá). `$pull` en ambos lados; idempotente (si no estaba vinculado devuelve 200 con `wasLinked:false`). Solo admin/registrar/super_admin. |
+| PUT | `/api/guardians/:guardianId` | Edita un tutor existente. Acepta `isActive` (boolean) — solo admin/registrar/super_admin pueden cambiarlo. Al pasar a `false` desvincula TODOS los hijos automáticamente y desactiva el `User` tutor si queda sin guardians activos. Al pasar a `true` reactiva el `User` si existía y estaba bajado. |
 
 **Regla de no-pisar-datos:** En el reuso por teléfono (tanto en `POST /api/guardians` como en `POST /api/students/import`) **solo completamos campos vacíos** (`name`/`lastname`/`relationship`). Un typo en el alta de un hermano no debe corromper al padre ya registrado — el teléfono es la identidad, sus datos personales son los del primer registro válido. `user_id` y `notification_prefs` nunca se tocan al reusar.
 
@@ -489,6 +490,15 @@ DRY_RUN=0 MONGO_URI=… node scripts/backfill-user-active.js   # aplica
 ```
 
 El script flipea todos los `isActive=false` a `true`. Idempotente. Después del backfill, `isActive=false` solo aparece cuando un operador lo setea explícitamente.
+
+**`Guardian.isActive`** funciona igual: `default: true` en el modelo, baja explícita via `PUT /api/guardians/:id { isActive: false }` (solo admin/registrar/super_admin). Al desactivar el backend **desvincula automáticamente a todos los hijos** (ambos lados) y, si el tutor queda sin ningún guardian activo, baja `User.isActive` a false (login → 403). Antes de desplegar el guard de lectura o cualquier uso real:
+
+```sh
+DRY_RUN=1 MONGO_URI=… node scripts/backfill-guardian-active.js   # preview
+DRY_RUN=0 MONGO_URI=… node scripts/backfill-guardian-active.js   # aplica
+```
+
+Flipa a `true` los guardians con `isActive: false` O sin el campo (los 422 preexistentes). Idempotente.
 
 ## WhatsApp OTP (Twilio Business API)
 

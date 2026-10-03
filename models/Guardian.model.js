@@ -79,6 +79,27 @@ const guardianSchema = new Schema(
       ref: "Student",
       default: [],
     },
+    // Estado del registro de tutor. `true` = activo (vigente, recibe
+    // notificaciones, aparece en listas de operación). `false` = dado
+    // de baja: el registro SE CONSERVA como historial (auditoría,
+    // contactos previos) pero NO debe volver a aparecer como tutor
+    // activo en ningún flujo.
+    //
+    // Al pasar a `false` el backend desvinculará automáticamente a
+    // todos los estudiantes (el push y los populate dejaron de
+    // necesitarlos) y, si el `user_id` del tutor no queda asociado a
+    // ningún otro guardian activo, también bajará `User.isActive` a
+    // `false` para que el tutor no pueda entrar al dashboard.
+    //
+    // Precedente: `User.isActive` (commit `feat(auth): isActive
+    // semántica`). Para los 422 guardians existentes sin el campo, un
+    // backfill (`scripts/backfill-guardian-active.js`) los marca como
+    // activos y las queries que importan usan `{$ne: false}` por
+    // seguridad. Solo se escribe explícitamente desde el controller.
+    isActive: {
+      type: Boolean,
+      default: true,
+    },
     // Preferencias de notificación por canal. Misma estructura que en
     // User. Para tutores el opt-in se captura normalmente al crearse
     // el Guardian vía admin (la escuela informa al padre al darle

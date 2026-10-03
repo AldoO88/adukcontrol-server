@@ -10,6 +10,7 @@ const {
 } = require("../middleware/tenant-context.middleware");
 const {
   getAllGuardians,
+  getGuardiansStats,
   getMyGuardians,
   createGuardian,
   getGuardianById,
@@ -28,6 +29,7 @@ const {
   getMyAnnouncementById,
   getMyCitationById,
   assignStudentsToGuardian,
+  unassignStudentFromGuardian,
 } = require("../controllers/guardians.controller");
 
 // Vista del tutor del ledger de conducta de su hijo + resumen del KPI
@@ -156,6 +158,10 @@ const adminOnly = authorize("admin", "registrar", "super_admin");
 // GET /api/guardians — listar tutores
 router.get("/", adminOnly, getAllGuardians);
 
+// GET /api/guardians/stats — métricas agregadas del módulo de tutores.
+// Útil para la pantalla "Padres" y el card del overview del ciclo.
+router.get("/stats", adminOnly, getGuardiansStats);
+
 // POST /api/guardians — crear tutor
 router.post("/", adminOnly, createGuardian);
 
@@ -164,6 +170,15 @@ router.post("/", adminOnly, createGuardian);
 // "Buscar tutor existente" del form de alta de alumno. Aditivo:
 // $addToSet en ambos lados, nunca reemplaza el array.
 router.post("/:guardianId/students", adminOnly, assignStudentsToGuardian);
+
+// DELETE /api/guardians/:guardianId/students/:studentId — desvincular
+// UN estudiante puntual del tutor (cambio de tutor, ya no es la mamá
+// ahora es el papá, etc.). $pull en ambos lados; idempotente.
+router.delete(
+  "/:guardianId/students/:studentId",
+  adminOnly,
+  unassignStudentFromGuardian
+);
 
 // GET /api/guardians/:guardianId — detalle
 router.get("/:guardianId", getGuardianById);
