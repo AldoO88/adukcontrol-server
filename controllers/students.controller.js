@@ -278,6 +278,19 @@ const updateStudent = async (req, res, next) => {
       delete req.body.school;
     }
 
+    // Normalizar "" → null en campos opcionales. La UI envía "" cuando
+    // un select/textarea queda sin elegir; el schema rechaza "" en el
+    // enum de sex y "" deja data sucia en strings como `address` /
+    // `blood_type` (que luego no se persisten limpiamente como null).
+    // Si se manda explícitamente `null` también se respeta (no se toca).
+    const nullableStringFields = [
+      "sex", "phone", "address", "blood_type", "medical_notes",
+    ];
+    for (const f of nullableStringFields) {
+      if (req.body[f] === "") req.body[f] = null;
+    }
+    if (req.body.date_of_birth === "") req.body.date_of_birth = null;
+
     // Validar: isFaceEnrolled requiere biometricId
     if (req.body.isFaceEnrolled === true) {
       const bioId = req.body.biometricId !== undefined ? req.body.biometricId : currentStudent.biometricId;
