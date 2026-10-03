@@ -264,9 +264,9 @@ const getGuardiansStats = async (req, res, next) => {
       alumnosSinTutor = await Student.countDocuments(tenant);
     }
 
-    res.status(200).json({
+res.status(200).json({
       total,
-      activos,
+      ativos,
       dados_de_baja: dadosDeBaja,
       sin_alumnos: sinAlumnos,
       con_cuenta_activa: conCuentaActiva,
@@ -274,6 +274,7 @@ const getGuardiansStats = async (req, res, next) => {
       alumnos_sin_tutor: alumnosSinTutor,
     });
   } catch (error) {
+    console.error("[debug-guardians-stats]", error && error.stack ? error.stack : error);
     next(error);
   }
 };
