@@ -274,7 +274,6 @@ res.status(200).json({
       alumnos_sin_tutor: alumnosSinTutor,
     });
   } catch (error) {
-    console.error("[debug-guardians-stats]", error && error.stack ? error.stack : error);
     next(error);
   }
 };
