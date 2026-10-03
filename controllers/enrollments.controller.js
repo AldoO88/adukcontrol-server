@@ -58,8 +58,11 @@ const getAllEnrollments = async (req, res, next) => {
     const enrollments = await Enrollment.find(filter)
       .populate({
         path: "student_id",
-        select: "controlNumber first_name last_name sex phone photoUrl rfid_card biometricId isFaceEnrolled workshop_group_id status",
-        populate: { path: "workshop_group_id", select: "grade section type" },
+        select: "controlNumber first_name last_name sex phone photoUrl rfid_card biometricId isFaceEnrolled workshop_group_id status guardians",
+        populate: [
+          { path: "workshop_group_id", select: "grade section type" },
+          { path: "guardians", select: "name lastname" },
+        ],
       })
       .populate("group_id", "grade section school_year_id shift type")
       .populate("school_year_id", "name startDate endDate isActive")
