@@ -11,6 +11,7 @@ const mongoose = require("mongoose");
 const Enrollment = require("../models/Enrollment.model");
 const Student = require("../models/Student.model");
 const School = require("../models/School.model");
+const { saveWithControlNumberRetry } = require("../services/control-number.service");
 
 const tenantFilter = (req) =>
   req.payload.role === "super_admin" ? {} : { school: req.payload.schoolId };
@@ -32,7 +33,9 @@ const syncStudentCurrentGroup = async (studentId, groupId, schoolYearId, schoolI
   if (!student) return;
   if (String(student.current_group_id) === String(groupId)) return;
   student.current_group_id = groupId;
-  await student.save();
+  // Retry sobre E11000 (race del pre-save "max+1" cuando varios
+  // sync corren en paralelo, p.ej. bulk group assign desde la UI).
+  await saveWithControlNumberRetry(student);
 };
 
 // GET /api/enrollments

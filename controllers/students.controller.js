@@ -13,6 +13,7 @@ const {
   uploadBufferWithRetry,
   saveForRetry,
 } = require("../services/cloudinary-upload.service");
+const { saveWithControlNumberRetry } = require("../services/control-number.service");
 
 // Migra los assets (logos/fotos) de un student de una escuela a otra.
 // Usado cuando se cambia el campo `school` de un Student. Renombra los
@@ -309,6 +310,30 @@ const updateStudent = async (req, res, next) => {
 
     if (!updated) {
       return res.status(404).json({ message: `No student with id: ${studentId}` });
+    }
+
+    // Defensivo: `findOneAndUpdate` no dispara los pre-save hooks, así
+    // que si el body setea `current_group_id` por primera vez (p.ej.
+    // admin lo asigna directo desde el expediente en vez de vía
+    // /api/enrollments/:id) el alumno queda sin controlNumber. Si el
+    // update nos dejó en ese estado y tenemos school + grupo, generamos
+    // el número vía save() — con retry para evitar E11000 si hay
+    // generaciones concurrentes. No fallamos la request si el número
+    // no se puede generar; el cambio principal ya quedó.
+    if (
+      updated &&
+      !updated.controlNumber &&
+      updated.current_group_id &&
+      updated.school
+    ) {
+      try {
+        await saveWithControlNumberRetry(updated);
+      } catch (err) {
+        console.error(
+          `[updateStudent] controlNumber retry failed for ${studentId}:`,
+          err.message
+        );
+      }
     }
 
     // Si cambió el school, migrar los assets a la nueva carpeta
@@ -1412,6 +1437,19 @@ const importStudentsFromSpreadsheet = async (req, res, next) => {
           okRow.guardian_missing_reason = item.guardianName
             ? "missing_phone"  // tenía nombre del tutor pero faltó el celular
             : "no_data";       // la fila no traía datos de tutor
+        }
+        // Si la fila no traía columna `grupo`, el alumno y su
+        // enrollment nacen sin grupo → el pre-save de Student no puede
+        // generar el controlNumber (depende de grade+shift del grupo).
+        // Marcamos la fila para que aparezca en "Alumnos sin grupo —
+        // número de control pendiente hasta asignar" en el resumen.
+        // El alumno se conserva igual; el admin puede asignar el grupo
+        // después desde la UI (lo que dispara syncStudentCurrentGroup y
+        // genera el número con el último consecutivo del grado).
+        if (!item.groupId) {
+          okRow.pending_group = true;
+          okRow.student_name = `${item.firstName || ""} ${item.lastName || ""}`.trim();
+          okRow.pending_group_reason = "no_grupo";
         }
         created.push(okRow);
       } catch (err) {
