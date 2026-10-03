@@ -90,6 +90,9 @@ const getAllGuardians = async (req, res, next) => {
       phone,
       status,
       no_students,
+      group_id,
+      taller_id,
+      school_year_id,
     } = req.query;
 
     const pageNum = Math.max(parseInt(page, 10) || 1, 1);
@@ -126,6 +129,64 @@ const getAllGuardians = async (req, res, next) => {
       filter.$and = [
         { $or: [{ students: { $size: 0 } }, { students: { $exists: false } }] },
       ];
+    }
+
+    // Filtros por grupo/taller (pantalla Padres): resuelven el ciclo
+    // (param `school_year_id` o el `current_school_year_id` del School
+    // del tenant), luego derivan los `student_id`s que corresponden.
+    // El set se intersecta si vienen ambos (tutor con al menos un hijo
+    // en ese grupo Y en ese taller).
+    const wantsGroup = group_id && mongoose.Types.ObjectId.isValid(String(group_id));
+    const wantsTaller = taller_id && mongoose.Types.ObjectId.isValid(String(taller_id));
+    if (wantsGroup || wantsTaller) {
+      const db = mongoose.connection.db;
+      // Resolver school_year_id para el filtro de enrollment (el taller
+      // vive en `Student.workshop_group_id` y no depende del ciclo).
+      let yearOid = null;
+      if (school_year_id && mongoose.Types.ObjectId.isValid(String(school_year_id))) {
+        yearOid = new mongoose.Types.ObjectId(String(school_year_id));
+      } else if (req.payload.schoolId) {
+        const school = await db.collection("schools").findOne(
+          { _id: req.payload.schoolId },
+          { projection: { current_school_year_id: 1 } }
+        );
+        yearOid = school?.current_school_year_id || null;
+      }
+
+      const idsByGroup = new Set();
+      const idsByTaller = new Set();
+
+      if (wantsGroup && yearOid) {
+        const groupOid = new mongoose.Types.ObjectId(String(group_id));
+        const studentIds = await db.collection("enrollments").distinct("student_id", {
+          school: req.payload.schoolId,
+          school_year_id: yearOid,
+          group_id: groupOid,
+          cycle_status: "enrolled",
+        });
+        studentIds.forEach((id) => idsByGroup.add(String(id)));
+      }
+      if (wantsTaller) {
+        const tallerOid = new mongoose.Types.ObjectId(String(taller_id));
+        const studentIds = await db.collection("students").distinct("_id", {
+          ...tenantFilter(req),
+          workshop_group_id: tallerOid,
+        });
+        studentIds.forEach((id) => idsByTaller.add(String(id)));
+      }
+
+      let finalIds;
+      if (wantsGroup && wantsTaller) {
+        finalIds = [...idsByGroup].filter((id) => idsByTaller.has(id));
+      } else if (wantsGroup) {
+        finalIds = [...idsByGroup];
+      } else {
+        finalIds = [...idsByTaller];
+      }
+      // Si el set quedó vacío (ej. grupo sin alumnos inscritos) el
+      // filtro `students: { $in: [] }` no matchea nada → 0 tutores.
+      // Combinamos con un `student_id` previo si lo hubiera.
+      filter.students = finalIds.length === 0 ? ["__none__"] : { $in: finalIds };
     }
 
     const skip = (pageNum - 1) * limitNum;
